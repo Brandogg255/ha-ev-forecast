@@ -250,7 +250,7 @@ async def test_status_sensor_maps_configured_state_buckets(
             CONF_NAME: name,
             CONF_SOC_ENTITY: soc_entity,
             CONF_PLUGGED_ENTITY: "sensor.de_ev_charger_status",
-            CONF_PLUGGED_STATES: ["plugged in", "waiting", "charged", "paused"],
+            CONF_PLUGGED_STATES: ["plugged_in", "waiting", "charged", "paused"],
             CONF_UNPLUGGED_STATES: ["sleep", "idle"],
             CONF_CHARGING_STATES: ["Charging"],
         },

@@ -318,8 +318,20 @@ def fill_missing(
     return True
 
 
+def _state_key(value: Any) -> str:
+    """Canonical form of one state name, for comparison only.
+
+    Lower-cased with ``_`` and ``-`` folded to single spaces, so a user typing
+    ``plugged in`` still matches a charger that reports ``plugged_in``.
+    """
+    if value is None:
+        return ""
+    text = str(value).lower().replace("_", " ").replace("-", " ")
+    return " ".join(text.split())
+
+
 def normalise_state_list(values: Any) -> tuple[str, ...]:
-    """Clean a user-supplied state list: trimmed, lower-cased, de-duplicated.
+    """Clean a user-supplied state list: canonical form, de-duplicated.
 
     A bare string is treated as one value, so a hand-edited entry that stores
     ``"plugged_in"`` instead of ``["plugged_in"]`` cannot silently explode into
@@ -329,9 +341,7 @@ def normalise_state_list(values: Any) -> tuple[str, ...]:
         values = [values]
     cleaned: list[str] = []
     for value in values or ():
-        if value is None:
-            continue
-        text = str(value).strip().lower()
+        text = _state_key(value)
         if text and text not in cleaned:
             cleaned.append(text)
     return tuple(cleaned)
@@ -347,13 +357,16 @@ def classify_connection(
 
     With all three lists empty the binary-sensor rule applies: ``on`` means the
     cable is connected, and charging cannot be told apart from being plugged in.
-    Once any list is filled the state is matched case-insensitively against
-    them: an entry in ``unplugged_states`` wins outright, otherwise an entry in
+    Once any list is filled the state is compared in canonical form: an entry
+    in ``unplugged_states`` wins outright, otherwise an entry in
     ``charging_states`` implies the cable is connected as well as charging.
     Anything that matches nothing - including ``unknown`` and ``unavailable`` -
     reads as disconnected, so a dropped-out charger never looks like free power.
     """
-    text = str(state if state is not None else "").strip().lower()
+    plugged_states = tuple(map(_state_key, plugged_states))
+    unplugged_states = tuple(map(_state_key, unplugged_states))
+    charging_states = tuple(map(_state_key, charging_states))
+    text = _state_key(state)
     if not plugged_states and not unplugged_states and not charging_states:
         connected = text == "on"
         return connected, connected

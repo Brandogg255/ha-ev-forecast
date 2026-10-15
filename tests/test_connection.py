@@ -2,7 +2,7 @@
 
 The state lists are the only place the integration interprets a charger's
 vocabulary, so they are pinned here without a running instance. The example
-mapping is the one a Wallbox-style status sensor reports.
+mapping is the one the owner's de wallbox reports.
 """
 
 from custom_components.ev_forecast.model import (
@@ -11,7 +11,7 @@ from custom_components.ev_forecast.model import (
 )
 
 # sensor.de_ev_charger_status vocabulary.
-PLUGGED = ("plugged in", "waiting", "charged", "paused")
+PLUGGED = ("plugged_in", "waiting", "charged", "paused")
 UNPLUGGED = ("sleep", "idle")
 CHARGING = ("charging",)
 
@@ -69,3 +69,21 @@ def test_normalise_state_list_cleans_user_input():
     assert normalise_state_list("idle") == ("idle",)
     assert normalise_state_list(None) == ()
     assert normalise_state_list(()) == ()
+
+
+def test_separators_are_folded_in_both_directions():
+    # The charger reports ``plugged_in``; a user typing "plugged in" still hits.
+    assert classify_connection("plugged_in", ("plugged in",), UNPLUGGED, CHARGING) == (
+        True,
+        False,
+    )
+    assert classify_connection("plugged in", PLUGGED, UNPLUGGED, CHARGING) == (True, False)
+    assert normalise_state_list(["plugged_in", "plugged in", "Fast-Charge"]) == (
+        "plugged in",
+        "fast charge",
+    )
+
+
+def test_unlisted_charger_state_reads_disconnected():
+    # ``fault`` is one of the charger's own options but in nobody's bucket.
+    assert classify_connection("fault", PLUGGED, UNPLUGGED, CHARGING) == (False, False)

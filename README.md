@@ -81,14 +81,15 @@ Leave the three state lists empty and the plugged input is read the classic
 way: a `binary_sensor` whose state is `on` while the cable is connected.
 
 Fill the lists to use any `sensor` whose state is a word instead - a wallbox
-status sensor, for example. Matching ignores case and surrounding space, and
-the lists are free-form tags, so type exactly the states that entity reports.
+status sensor, for example. The lists are free-form, and matching folds case,
+surrounding space and `_`/`-` separators, so typing `plugged in` still matches a
+charger that reports `plugged_in`.
 
 For `sensor.de_ev_charger_status`:
 
 | List | States |
 | --- | --- |
-| Plugged in | `plugged in`, `waiting`, `charged`, `paused` |
+| Plugged in | `plugged_in`, `waiting`, `charged`, `paused` |
 | Unplugged | `sleep`, `idle` |
 | Charging | `charging` |
 
@@ -96,6 +97,11 @@ An explicit *unplugged* state wins over the other two, so overlapping lists
 stay predictable. A *charging* state always counts as plugged in as well.
 Anything unmatched - including `unknown` and `unavailable` - reads as
 disconnected, so a charger that has dropped out never looks like free power.
+
+That sensor declares its own vocabulary in an `options` attribute: `sleep`,
+`idle`, `plugged_in`, `charging`, `waiting`, `fault`, `paused`, `charged`.
+`fault` belongs in no bucket - unmatched means disconnected, which is the safe
+reading for a charger that has given up.
 
 `plugged_flag`, `charge_rate`, `soc_required` and the plugged forecast key off
 **connected**, because that is the window in which the car *can* be charged;

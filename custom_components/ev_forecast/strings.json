@@ -24,7 +24,7 @@
           "ev_name": "Used for entity ids, for example \"GAC Aion UT\" gives sensor.gac_aion_ut_charge_rate_forecast.",
           "soc_entity_id": "A sensor whose state is the pack percentage (0-100). Its slope drives the drive-power signal.",
           "plugged_entity_id": "A binary sensor that is on while the cable is connected, or a status sensor whose states you map with the three lists below.",
-          "plugged_states": "Leave all three lists empty for a binary sensor: \"on\" means connected. For a status sensor, list every state where the cable is connected, for example plugged in, waiting, charged, paused.",
+          "plugged_states": "Leave all three lists empty for a binary sensor: \"on\" means connected. For a status sensor, list every state where the cable is connected, for example plugged_in, waiting, charged, paused.",
           "unplugged_states": "States where the cable is not connected, for example sleep, idle. These win over the plugged-in and charging lists.",
           "charging_states": "States where power is actually flowing, for example charging. A charging state always counts as plugged in too.",
           "capacity_kwh": "Usable energy in the pack; converts percentage into kW and kWh.",
@@ -58,7 +58,7 @@
         },
         "data_description": {
           "plugged_entity_id": "A binary sensor that is on while the cable is connected, or a status sensor whose states you map with the three lists below.",
-          "plugged_states": "Leave all three lists empty for a binary sensor: \"on\" means connected. For a status sensor, list every state where the cable is connected, for example plugged in, waiting, charged, paused.",
+          "plugged_states": "Leave all three lists empty for a binary sensor: \"on\" means connected. For a status sensor, list every state where the cable is connected, for example plugged_in, waiting, charged, paused.",
           "unplugged_states": "States where the cable is not connected, for example sleep, idle. These win over the plugged-in and charging lists.",
           "charging_states": "States where power is actually flowing, for example charging. A charging state always counts as plugged in too."
         }
