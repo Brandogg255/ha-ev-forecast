@@ -1,0 +1,91 @@
+backfill_history:
+  name: Backfill history
+  description: >
+    Replays the EV state-of-charge and plugged-in sensor history from the
+    Home Assistant recorder into the integration's own hour buckets. Only
+    empty buckets are written, so live data is never counted twice. Run this
+    once after adding an EV so the forecasts and the required state of charge
+    are useful on day one instead of after a week of accumulation.
+  fields:
+    entry_id:
+      name: EV
+      description: Leave empty to backfill every configured EV.
+      required: false
+      selector:
+        config_entry:
+          integration: ev_forecast
+    days:
+      name: Days of history
+      description: How many days of recorder history to replay.
+      default: 7
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 365
+          step: 1
+          mode: box
+plan_trip:
+  name: Plan trip
+  description: >
+    Adds a planned trip so the required state of charge accounts for energy
+    that has not been driven yet. The energy is spread evenly over the trip's
+    hours and added to the drive-power forecast. A trip with the same date and
+    start hour replaces the previous one.
+  fields:
+    entry_id:
+      name: EV
+      description: Leave empty to plan for every configured EV.
+      required: false
+      selector:
+        config_entry:
+          integration: ev_forecast
+    date:
+      name: Date
+      description: Trip date, YYYY-MM-DD.
+      required: true
+      selector:
+        date:
+    start_hour:
+      name: Start hour
+      description: Local hour (0-23) the trip begins.
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 23
+          step: 1
+          mode: box
+    hours:
+      name: Duration
+      description: Hours the trip takes.
+      default: 1
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 24
+          step: 1
+          mode: box
+    kwh:
+      name: Energy
+      description: Energy the trip consumes, in kWh.
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 200
+          step: 0.1
+          unit_of_measurement: kWh
+          mode: box
+clear_trips:
+  name: Clear planned trips
+  description: Removes every planned trip from the model.
+  fields:
+    entry_id:
+      name: EV
+      description: Leave empty to clear every configured EV.
+      required: false
+      selector:
+        config_entry:
+          integration: ev_forecast
