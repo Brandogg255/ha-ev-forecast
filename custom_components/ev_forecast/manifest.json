@@ -6,7 +6,7 @@
   "issue_tracker": "https://github.com/Brandogg255/ha-ev-forecast/issues",
   "codeowners": ["@Brandogg255"],
   "config_flow": true,
-  "integration_type": "utility",
+  "integration_type": "service",
   "iot_class": "calculated",
   "after_dependencies": ["recorder"],
   "requirements": [],
