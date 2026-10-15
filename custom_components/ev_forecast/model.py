@@ -234,6 +234,11 @@ def daily_total(samples: dict[str, dict[str, float]], field: str, day: datetime)
     return round(total, 3)
 
 
+def window_total(samples: dict[str, dict[str, float]], field: str) -> float:
+    """Sum of ``field`` across every retained hour bucket."""
+    return round(sum(float(record.get(field, 0.0)) for record in samples.values()), 3)
+
+
 def prune_samples(samples: dict[str, dict[str, float]], keep_from: datetime) -> dict[str, dict[str, float]]:
     """Drop hour buckets older than ``keep_from``."""
     boundary = floor_hour(keep_from).isoformat()

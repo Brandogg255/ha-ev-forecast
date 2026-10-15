@@ -46,6 +46,7 @@ from .model import (
     required_soc_pct,
     soc_power_kw,
     soc_slope_pct_per_hour,
+    window_total,
 )
 from .store import UsageStore
 
@@ -164,7 +165,7 @@ class EVUsageCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "soc_change": round(soc_change, 3),
             "soc_power": round(soc_power, 3),
             "drive_power": round(drive_power, 3),
-            "drive_energy": round(daily_total(self.store.hours, FIELD_DRIVE_KWH, now - timedelta(days=1)), 3),
+            "drive_energy": window_total(self.store.hours, FIELD_DRIVE_KWH),
             "drive_energy_daily": round(daily_total(self.store.hours, FIELD_DRIVE_KWH, now), 3),
             "plugged_flag": 1 if plugged else 0,
             "charge_rate": rate_now,

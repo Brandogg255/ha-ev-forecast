@@ -20,6 +20,7 @@ from custom_components.ev_forecast.model import (
     required_soc_pct,
     slot_averages,
     soc_power_kw,
+    window_total,
 )
 
 TZ = timezone(timedelta(hours=11))
@@ -252,3 +253,9 @@ def test_prune_samples_drops_old_buckets():
     samples.update(samples_from({9: {FIELD_DRIVE_KWH: 1.0}}, day_offset=0))
     kept = prune_samples(samples, BASE - timedelta(days=3))
     assert len(kept) == 1
+
+
+def test_window_total_sums_every_retained_bucket():
+    samples = samples_from({8: {FIELD_DRIVE_KWH: 1.0}}, day_offset=0)
+    samples.update(samples_from({9: {FIELD_DRIVE_KWH: 4.0}}, day_offset=-3))
+    assert window_total(samples, FIELD_DRIVE_KWH) == 5.0
