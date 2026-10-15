@@ -1,4 +1,11 @@
-"""Config flow for the EV Forecast integration."""
+"""Config flow for the EV Forecast integration.
+
+One usage model is created over three pages - the car, the charger, the
+forecast - because the three groups of settings are read from different places:
+the vehicle's telematics, the wallbox's status vocabulary, and how much history
+the owner wants the forecasts to average. The options flow walks the same three
+pages so a retune never has to hunt through one long form.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +20,7 @@ from homeassistant.config_entries import (
     ConfigFlowResult,
     OptionsFlow,
 )
-from homeassistant.core import callback
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv, selector
 
 from .const import (
@@ -65,6 +72,17 @@ _INT_KEYS: dict[str, int] = {
     CONF_SOC_WINDOW: DEFAULT_SOC_WINDOW,
     CONF_HORIZON: DEFAULT_HORIZON,
 }
+_LIST_KEYS = (CONF_PLUGGED_STATES, CONF_UNPLUGGED_STATES, CONF_CHARGING_STATES)
+
+# Every tunable at its default, so merging three pages can never drop a key.
+_DEFAULTS: dict[str, Any] = {
+    CONF_NAME: "",
+    **_FLOAT_KEYS,
+    **_INT_KEYS,
+    CONF_PLUGGED_STATES: [],
+    CONF_UNPLUGGED_STATES: [],
+    CONF_CHARGING_STATES: [],
+}
 
 
 def _number(
@@ -79,6 +97,7 @@ def _number(
     if unit is not None:
         config["unit_of_measurement"] = unit
     return selector.NumberSelector(selector.NumberSelectorConfig(**config))
+
 
 def _tags() -> selector.SelectSelector:
     """Free-form list of state names the user types themselves.
@@ -98,50 +117,69 @@ def _tags() -> selector.SelectSelector:
     )
 
 
-def _schema(defaults: dict[str, Any], *, strict: bool) -> vol.Schema:
-    """Build the config or options form for one EV.
+def _prefilled(defaults: dict[str, Any], key: str, default: Any) -> vol.Optional:
+    """Optional field defaulting to the stored value, or to ``default``."""
+    return vol.Optional(key, default=defaults.get(key, default))
 
-    ``strict`` is what the options flow uses: every field is pre-filled with
-    the stored value. The user step leaves the two entity pickers with no
-    value at all, so a submission that omits one re-shows the form with an
-    error instead of failing schema validation with a hard 400.
+
+def _picker(defaults: dict[str, Any], key: str, *, strict: bool) -> vol.Optional:
+    """Entity picker: pre-filled in the options flow, blank in the user flow.
+
+    Leaving it blank in the user step is what lets a submission that omits the
+    entity re-show the form with an error instead of failing schema validation.
     """
+    if strict:
+        return vol.Optional(key, default=defaults.get(key))
+    return vol.Optional(key)
 
-    def prefilled(key: str, default: Any) -> vol.Optional:
-        return vol.Optional(key, default=defaults.get(key, default))
 
-    def picker(key: str) -> vol.Optional:
-        if strict:
-            return vol.Optional(key, default=defaults.get(key))
-        return vol.Optional(key)
-
+def _car_schema(defaults: dict[str, Any], *, strict: bool) -> vol.Schema:
+    """Page one: which EV, and the pack parameters that size its charging."""
     return vol.Schema(
         {
-            prefilled(CONF_NAME, ""): cv.string,
-            picker(CONF_SOC_ENTITY): selector.EntitySelector(
+            _prefilled(defaults, CONF_NAME, ""): cv.string,
+            _picker(defaults, CONF_SOC_ENTITY, strict=strict): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain="sensor")
             ),
-            picker(CONF_PLUGGED_ENTITY): selector.EntitySelector(
-                selector.EntitySelectorConfig(
-                    domain=["binary_sensor", "sensor"]
-                )
+            _prefilled(defaults, CONF_CAPACITY, DEFAULT_CAPACITY): _number(
+                1, 500, 0.1, "kWh"
             ),
-            prefilled(CONF_PLUGGED_STATES, []): _tags(),
-            prefilled(CONF_UNPLUGGED_STATES, []): _tags(),
-            prefilled(CONF_CHARGING_STATES, []): _tags(),
-            prefilled(CONF_CAPACITY, DEFAULT_CAPACITY): _number(1, 500, 0.1, "kWh"),
-            prefilled(CONF_EFFICIENCY, DEFAULT_EFFICIENCY): _number(
+            _prefilled(defaults, CONF_EFFICIENCY, DEFAULT_EFFICIENCY): _number(
                 50, 100, 1, "%", selector.NumberSelectorMode.SLIDER
             ),
-            prefilled(CONF_CHARGE_RATE, DEFAULT_CHARGE_RATE): _number(0, 50, 0.1, "kW"),
-            prefilled(CONF_BUFFER, DEFAULT_BUFFER): _number(0, 50, 0.5, "kWh"),
-            prefilled(CONF_MAX_SOC, DEFAULT_MAX_SOC): _number(
+            _prefilled(defaults, CONF_CHARGE_RATE, DEFAULT_CHARGE_RATE): _number(
+                0, 50, 0.1, "kW"
+            ),
+            _prefilled(defaults, CONF_BUFFER, DEFAULT_BUFFER): _number(0, 50, 0.5, "kWh"),
+            _prefilled(defaults, CONF_MAX_SOC, DEFAULT_MAX_SOC): _number(
                 10, 100, 1, "%", selector.NumberSelectorMode.SLIDER
             ),
-            prefilled(CONF_HISTORY_DAYS, DEFAULT_HISTORY_DAYS): _number(
+        }
+    )
+
+
+def _charger_schema(defaults: dict[str, Any], *, strict: bool) -> vol.Schema:
+    """Page two: how the integration learns the cable is connected."""
+    return vol.Schema(
+        {
+            _picker(defaults, CONF_PLUGGED_ENTITY, strict=strict): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain=["binary_sensor", "sensor"])
+            ),
+            _prefilled(defaults, CONF_PLUGGED_STATES, []): _tags(),
+            _prefilled(defaults, CONF_UNPLUGGED_STATES, []): _tags(),
+            _prefilled(defaults, CONF_CHARGING_STATES, []): _tags(),
+        }
+    )
+
+
+def _forecast_schema(defaults: dict[str, Any], *, strict: bool) -> vol.Schema:
+    """Page three: how much history is averaged, and how far ahead it looks."""
+    return vol.Schema(
+        {
+            _prefilled(defaults, CONF_HISTORY_DAYS, DEFAULT_HISTORY_DAYS): _number(
                 MIN_HISTORY_DAYS, MAX_HISTORY_DAYS, 1
             ),
-            prefilled(CONF_SOC_WINDOW, DEFAULT_SOC_WINDOW): _number(
+            _prefilled(defaults, CONF_SOC_WINDOW, DEFAULT_SOC_WINDOW): _number(
                 MIN_SOC_WINDOW, MAX_SOC_WINDOW, 1, "min"
             ),
             vol.Optional(
@@ -156,16 +194,24 @@ def _schema(defaults: dict[str, Any], *, strict: bool) -> vol.Schema:
     )
 
 
-def _normalise(user_input: dict[str, Any]) -> dict[str, Any]:
-    """Type the form output so entry data is numbers, not strings."""
-    data = dict(user_input)
-    data[CONF_NAME] = str(data.get(CONF_NAME, "")).strip()
+def _normalise(values: dict[str, Any]) -> dict[str, Any]:
+    """Type one page's form output, leaving keys it does not carry alone.
+
+    Pages are merged in order, so a page must not invent the keys of another:
+    that would let a later page's default overwrite a value already captured.
+    """
+    data = dict(values)
+    if CONF_NAME in data:
+        data[CONF_NAME] = str(data[CONF_NAME] or "").strip()
     for key, fallback in _FLOAT_KEYS.items():
-        data[key] = float(data.get(key, fallback))
+        if key in data:
+            data[key] = float(fallback if data[key] in (None, "") else data[key])
     for key, fallback in _INT_KEYS.items():
-        data[key] = int(data.get(key, fallback))
-    for key in (CONF_PLUGGED_STATES, CONF_UNPLUGGED_STATES, CONF_CHARGING_STATES):
-        data[key] = list(normalise_state_list(data.get(key, ())))
+        if key in data:
+            data[key] = int(fallback if data[key] in (None, "") else data[key])
+    for key in _LIST_KEYS:
+        if key in data:
+            data[key] = list(normalise_state_list(data[key]))
     return data
 
 
@@ -175,39 +221,87 @@ def _derived_name(friendly_name: Any, entity_id: str) -> str:
     return label or entity_id
 
 
+def _charger_errors(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, str]:
+    """Errors for the charger page: the entity must exist and be interpretable."""
+    errors: dict[str, str] = {}
+    plugged_id = str(data.get(CONF_PLUGGED_ENTITY) or "")
+    if not plugged_id or hass.states.get(plugged_id) is None:
+        errors[CONF_PLUGGED_ENTITY] = "entity_not_found"
+    elif not plugged_id.startswith("binary_sensor."):
+        # A status sensor reports words, not on/off: with no list at all every
+        # state would read as disconnected, silently.
+        if not any(normalise_state_list(data.get(key)) for key in _LIST_KEYS):
+            errors[CONF_PLUGGED_STATES] = "states_required"
+    return errors
+
+
 class EVForecastConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Create one EV usage model per vehicle."""
+    """Create one EV usage model per vehicle, over three pages."""
 
     VERSION = 1
+
+    def __init__(self) -> None:
+        """Initialize the flow."""
+        super().__init__()
+        self._pages: dict[str, Any] = {}
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        """Page one: the car."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            data = _normalise(user_input)
-            for key in (CONF_SOC_ENTITY, CONF_PLUGGED_ENTITY):
-                entity = data.get(key)
-                if not entity or self.hass.states.get(str(entity)) is None:
-                    errors[key] = "entity_not_found"
-            # A status sensor reports words, not on/off: without at least one
-            # list every state would read as disconnected, silently.
-            plugged_id = str(data.get(CONF_PLUGGED_ENTITY) or "")
-            if plugged_id and not plugged_id.startswith("binary_sensor."):
-                buckets = (CONF_PLUGGED_STATES, CONF_UNPLUGGED_STATES, CONF_CHARGING_STATES)
-                if not any(normalise_state_list(data.get(key)) for key in buckets):
-                    errors[CONF_PLUGGED_STATES] = "states_required"
+            car = _normalise(user_input)
+            soc = str(car.get(CONF_SOC_ENTITY) or "")
+            if not soc or self.hass.states.get(soc) is None:
+                errors[CONF_SOC_ENTITY] = "entity_not_found"
             if not errors:
-                await self.async_set_unique_id(str(data[CONF_SOC_ENTITY]))
+                # One usage model per state-of-charge sensor, and it is worth
+                # failing here rather than after two more pages.
+                await self.async_set_unique_id(soc)
                 self._abort_if_unique_id_configured()
-                if not data[CONF_NAME]:
-                    state = self.hass.states.get(str(data[CONF_SOC_ENTITY]))
-                    data[CONF_NAME] = _derived_name(
-                        state.attributes.get("friendly_name"), str(data[CONF_SOC_ENTITY])
+                if not car[CONF_NAME]:
+                    state = self.hass.states.get(soc)
+                    car[CONF_NAME] = _derived_name(
+                        state.attributes.get("friendly_name"), soc
                     )
-                return self.async_create_entry(title=data[CONF_NAME], data=data)
+                self._pages.update(car)
+                return await self.async_step_charger()
         return self.async_show_form(
-            step_id="user", data_schema=_schema({}, strict=False), errors=errors
+            step_id="user",
+            data_schema=_car_schema({**self._pages, **(user_input or {})}, strict=False),
+            errors=errors,
+        )
+
+    async def async_step_charger(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Page two: the charger."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            charger = _normalise(user_input)
+            errors = _charger_errors(self.hass, charger)
+            if not errors:
+                self._pages.update(charger)
+                return await self.async_step_forecast()
+        return self.async_show_form(
+            step_id="charger",
+            data_schema=_charger_schema(
+                {**self._pages, **(user_input or {})}, strict=False
+            ),
+            errors=errors,
+        )
+
+    async def async_step_forecast(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Page three: the forecast."""
+        if user_input is not None:
+            data = _normalise({**_DEFAULTS, **self._pages, **user_input})
+            return self.async_create_entry(title=data[CONF_NAME], data=data)
+        return self.async_show_form(
+            step_id="forecast",
+            data_schema=_forecast_schema(self._pages, strict=False),
         )
 
     @staticmethod
@@ -217,17 +311,59 @@ class EVForecastConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class OptionsFlowHandler(OptionsFlow):
-    """Tune the model without recreating the entities."""
+    """Tune the model without recreating the entities, page by page."""
+
+    def __init__(self) -> None:
+        """Initialize the flow."""
+        super().__init__()
+        self._pages: dict[str, Any] = {}
+
+    @property
+    def _stored(self) -> dict[str, Any]:
+        """Everything already configured, options winning over entry data."""
+        entry: ConfigEntry = self.config_entry
+        return {**_DEFAULTS, **entry.data, **entry.options}
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        """Page one: the car."""
         if user_input is not None:
-            # The strict schema pre-fills every field, so this submission is
-            # complete; the coordinator overlays options on entry data.
-            return self.async_create_entry(title="", data=_normalise(user_input))
-        entry: ConfigEntry = self.config_entry
+            self._pages.update(_normalise(user_input))
+            return await self.async_step_charger()
         return self.async_show_form(
-            step_id="init",
-            data_schema=_schema({**entry.data, **entry.options}, strict=True),
+            step_id="init", data_schema=_car_schema(self._stored, strict=True)
+        )
+
+    async def async_step_charger(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Page two: the charger."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            charger = _normalise(user_input)
+            errors = _charger_errors(self.hass, charger)
+            if not errors:
+                self._pages.update(charger)
+                return await self.async_step_forecast()
+        return self.async_show_form(
+            step_id="charger",
+            data_schema=_charger_schema(
+                {**self._stored, **self._pages, **(user_input or {})}, strict=True
+            ),
+            errors=errors,
+        )
+
+    async def async_step_forecast(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Page three: the forecast."""
+        if user_input is not None:
+            self._pages.update(_normalise(user_input))
+            # The strict schemas pre-fill every field of every page, so the
+            # merged pages are a complete replacement for the old options.
+            return self.async_create_entry(title="", data=self._pages)
+        return self.async_show_form(
+            step_id="forecast",
+            data_schema=_forecast_schema({**self._stored, **self._pages}, strict=True),
         )

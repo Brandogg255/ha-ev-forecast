@@ -55,25 +55,43 @@ Then **Settings → Devices & Services → Add Integration → EV Forecast**.
 
 ## Configuration
 
+Setup is three pages, and the same three pages come back under **Configure**
+when you retune the model.
+
+### Page 1 — the car
+
 | Option | Default | Meaning |
 | --- | --- | --- |
-| EV name | – | Drives entity ids: `GAC Aion UT` → `sensor.gac_aion_ut_charge_rate_forecast` |
-| State of charge sensor | – | Sensor whose state is the pack percentage (0-100) |
-| Plugged-in entity | – | `binary_sensor` that is `on` while connected, or a status `sensor` mapped below |
-| States that mean plugged in | empty | Status-sensor states where the cable is connected |
-| States that mean unplugged | empty | Status-sensor states where it is not |
-| States that mean charging | empty | Status-sensor states where power is flowing |
+| EV name | – | Drives entity ids: `GAC Aion UT` → `sensor.gac_aion_ut_charge_rate_forecast`. Left blank it takes the state-of-charge sensor's name |
+| State of charge sensor | – | Sensor whose state is the pack percentage (0-100). One model per sensor, and a duplicate is rejected on this page |
 | Usable pack capacity | 60 kWh | Converts percentage into kW and kWh |
 | Charging efficiency | 85 % | Wall-to-pack efficiency |
 | Charge rate | 3.3 kW | AC power drawn while plugged; used where no history exists |
 | Comfort buffer | 5 kWh | Extra energy kept above the trip requirement |
 | Maximum state of charge | 90 % | Cap for the required state of charge |
+
+### Page 2 — the charger
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| Plugged-in entity | – | `binary_sensor` that is `on` while connected, or a status `sensor` mapped below |
+| States that mean plugged in | empty | Status-sensor states where the cable is connected |
+| States that mean unplugged | empty | Status-sensor states where it is not |
+| States that mean charging | empty | Status-sensor states where power is flowing |
+
+Choosing a status `sensor` and leaving all three lists empty is rejected: every
+state would read as disconnected, silently.
+
+### Page 3 — the forecast
+
+| Option | Default | Meaning |
+| --- | --- | --- |
 | Pattern history | 7 days | Days of hour buckets averaged by the forecasts |
 | State-of-charge window | 10 min | Slope window; shorter reacts faster, longer is smoother |
 | Sizing horizon | 72 h | How far ahead the required state of charge looks |
 
-Options are editable without recreating the entities; changing the source
-entities reloads the entry.
+Options are editable without recreating the entities; changing a source entity
+reloads the entry.
 
 ### Plugged-in states
 
@@ -160,9 +178,13 @@ data:
   days: 14
 ```
 
-Only hour buckets that are still empty are written, so replayed history can
-never double count what the live path already accumulated. Requires the
-`recorder` integration (default install).
+The replay ticks at the same five-minute cadence the live model polls at and
+folds every tick through the same accumulator, so a six-hour plugged run
+becomes six hour buckets rather than one, and a discharge ramp lands in the
+hours it actually spanned rather than the hour it finished. Only hour buckets
+that are still empty are written, so replayed history can never double count
+what the live path already accumulated. Requires the `recorder` integration
+(default install).
 
 Tell the model about a trip before it happens — this is what the historical
 pattern cannot know:

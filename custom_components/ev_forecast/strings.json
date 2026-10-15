@@ -2,65 +2,77 @@
   "config": {
     "step": {
       "user": {
-        "title": "EV usage model",
-        "description": "Pick the EV's state-of-charge and plugged-in sensors, then set the pack parameters used to size charging.",
+        "title": "The car",
+        "description": "Name the EV and pick its state-of-charge sensor. The pack parameters are what turn that percentage into kW and kWh.",
         "data": {
           "ev_name": "EV name",
           "soc_entity_id": "State of charge sensor",
-          "plugged_entity_id": "Plugged-in entity",
-          "plugged_states": "States that mean plugged in",
-          "unplugged_states": "States that mean unplugged",
-          "charging_states": "States that mean charging",
           "capacity_kwh": "Usable pack capacity",
           "efficiency_pct": "Charging efficiency",
           "charge_rate_kw": "Charge rate",
           "buffer_kwh": "Comfort buffer",
-          "max_soc_pct": "Maximum state of charge",
+          "max_soc_pct": "Maximum state of charge"
+        },
+        "data_description": {
+          "ev_name": "Used for entity ids, for example \"GAC Aion UT\" gives sensor.gac_aion_ut_charge_rate_forecast.",
+          "soc_entity_id": "A sensor whose state is the pack percentage (0-100). Its slope drives the drive-power signal.",
+          "capacity_kwh": "Usable energy in the pack; converts percentage into kW and kWh.",
+          "efficiency_pct": "Wall-to-pack efficiency used when converting charge rate into stored energy.",
+          "charge_rate_kw": "AC power the EV draws while plugged in; used when no measured history exists.",
+          "buffer_kwh": "Extra energy kept above the trip requirement.",
+          "max_soc_pct": "Cap for the required state of charge, so an unreachable target never pins charging to the maximum."
+        }
+      },
+      "charger": {
+        "title": "The charger",
+        "description": "How the model tells a connected cable from a disconnected one. Leave the three lists empty for a binary sensor; fill them for a status sensor whose states are words.",
+        "data": {
+          "plugged_entity_id": "Plugged-in entity",
+          "plugged_states": "States that mean plugged in",
+          "unplugged_states": "States that mean unplugged",
+          "charging_states": "States that mean charging"
+        },
+        "data_description": {
+          "plugged_entity_id": "A binary sensor that is on while the cable is connected, or a status sensor whose states you map with the three lists below.",
+          "plugged_states": "Leave all three lists empty for a binary sensor: \"on\" means connected. For a status sensor, list every state where the cable is connected, for example plugged_in, waiting, charged, paused. Underscores and spaces are treated alike.",
+          "unplugged_states": "States where the cable is not connected, for example sleep, idle. These win over the plugged-in and charging lists.",
+          "charging_states": "States where power is actually flowing, for example charging. A charging state always counts as plugged in too, and drives the charging flag."
+        }
+      },
+      "forecast": {
+        "title": "The forecast",
+        "description": "How much history the forecasts average, and how far ahead the required state of charge looks.",
+        "data": {
           "history_days": "Pattern history",
           "soc_window_minutes": "State-of-charge window",
           "horizon_hours": "Sizing horizon"
         },
         "data_description": {
-          "ev_name": "Used for entity ids, for example \"GAC Aion UT\" gives sensor.gac_aion_ut_charge_rate_forecast.",
-          "soc_entity_id": "A sensor whose state is the pack percentage (0-100). Its slope drives the drive-power signal.",
-          "plugged_entity_id": "A binary sensor that is on while the cable is connected, or a status sensor whose states you map with the three lists below.",
-          "plugged_states": "Leave all three lists empty for a binary sensor: \"on\" means connected. For a status sensor, list every state where the cable is connected, for example plugged_in, waiting, charged, paused.",
-          "unplugged_states": "States where the cable is not connected, for example sleep, idle. These win over the plugged-in and charging lists.",
-          "charging_states": "States where power is actually flowing, for example charging. A charging state always counts as plugged in too.",
-          "capacity_kwh": "Usable energy in the pack; converts percentage into kW and kWh.",
-          "efficiency_pct": "Wall-to-pack efficiency used when converting charge rate into stored energy.",
-          "charge_rate_kw": "AC power the EV draws while plugged in; used when no measured history exists.",
-          "buffer_kwh": "Extra energy kept above the trip requirement.",
-          "max_soc_pct": "Cap for the required state of charge, so an unreachable target never pins charging to the maximum.",
-          "history_days": "Days of hour buckets averaged for the forecasts.",
+          "history_days": "Days of hour buckets averaged for the forecasts. Backfill replays this many days of recorder history at the same cadence the live model polls at.",
           "soc_window_minutes": "Minutes of state-of-charge movement used for the live power signals.",
           "horizon_hours": "How far ahead the required state of charge looks for trips."
         }
       },
       "init": {
-        "title": "EV usage model",
-        "description": "Tune the model. Changes apply without recreating the entities; changing the source entities reloads the entry.",
+        "title": "The car",
+        "description": "Tune the car's parameters. Changes apply without recreating the entities; changing a source entity reloads the entry.",
         "data": {
           "ev_name": "EV name",
           "soc_entity_id": "State of charge sensor",
-          "plugged_entity_id": "Plugged-in entity",
-          "plugged_states": "States that mean plugged in",
-          "unplugged_states": "States that mean unplugged",
-          "charging_states": "States that mean charging",
           "capacity_kwh": "Usable pack capacity",
           "efficiency_pct": "Charging efficiency",
           "charge_rate_kw": "Charge rate",
           "buffer_kwh": "Comfort buffer",
-          "max_soc_pct": "Maximum state of charge",
-          "history_days": "Pattern history",
-          "soc_window_minutes": "State-of-charge window",
-          "horizon_hours": "Sizing horizon"
+          "max_soc_pct": "Maximum state of charge"
         },
         "data_description": {
-          "plugged_entity_id": "A binary sensor that is on while the cable is connected, or a status sensor whose states you map with the three lists below.",
-          "plugged_states": "Leave all three lists empty for a binary sensor: \"on\" means connected. For a status sensor, list every state where the cable is connected, for example plugged_in, waiting, charged, paused.",
-          "unplugged_states": "States where the cable is not connected, for example sleep, idle. These win over the plugged-in and charging lists.",
-          "charging_states": "States where power is actually flowing, for example charging. A charging state always counts as plugged in too."
+          "ev_name": "Renaming changes the entity ids on the next reload.",
+          "soc_entity_id": "Changing this reloads the entry and moves the model to the new sensor.",
+          "capacity_kwh": "Usable energy in the pack; converts percentage into kW and kWh.",
+          "efficiency_pct": "Wall-to-pack efficiency used when converting charge rate into stored energy.",
+          "charge_rate_kw": "AC power the EV draws while plugged in; used when no measured history exists.",
+          "buffer_kwh": "Extra energy kept above the trip requirement.",
+          "max_soc_pct": "Cap for the required state of charge, so an unreachable target never pins charging to the maximum."
         }
       }
     },

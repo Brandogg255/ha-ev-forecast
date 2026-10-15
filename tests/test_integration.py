@@ -8,6 +8,7 @@ anywhere else so the pure-model suite still runs with plain pytest.
 from __future__ import annotations
 
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -41,6 +42,10 @@ from custom_components.ev_forecast.const import (  # noqa: E402
     SERVICE_CLEAR_TRIPS,
     SERVICE_BACKFILL,
     SERVICE_PLAN_TRIP,
+)
+from custom_components.ev_forecast.model import (  # noqa: E402
+    FIELD_DRIVE_KWH,
+    FIELD_PLUGED_HOURS,
 )
 
 CONFIG = {
@@ -141,10 +146,77 @@ async def test_soc_drop_accumulates_drive_energy(hass: HomeAssistant) -> None:
     assert float(hass.states.get("sensor.gac_aion_ut_soc_power").state) < 0.0
 
 
-async def test_config_flow_answers_a_partial_submission_with_form_errors(
+async def test_backfill_service_replays_a_long_run_at_the_live_cadence(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Six hours of history becomes six plugged hours, not one capped bucket."""
+    entry = await setup(hass, plugged="off")
+    coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+
+    def fake_history(hass, start_time, end_time, entity_ids, *args, **kwargs):
+        # A wallbox that reported ``on`` for six hours, and an SoC sensor that
+        # spoke every five minutes - what the recorder actually holds.
+        run_start = end_time - timedelta(hours=6)
+        steps = range(0, 73)
+        return {
+            CONFIG[CONF_SOC_ENTITY]: [
+                SimpleNamespace(
+                    last_changed=run_start + timedelta(minutes=5 * step),
+                    state=f"{40.0 - 0.05 * step:.2f}",
+                )
+                for step in steps
+            ],
+            CONFIG[CONF_PLUGGED_ENTITY]: [
+                SimpleNamespace(last_changed=run_start, state="on")
+            ],
+        }
+
+    monkeypatch.setattr(
+        "homeassistant.components.recorder.history.get_significant_states", fake_history
+    )
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_BACKFILL,
+        {"entry_id": entry.entry_id, "days": 1},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    hours = coordinator.store.hours
+    plugged = [bucket.get(FIELD_PLUGED_HOURS, 0.0) for bucket in hours.values()]
+    # The old replay credited one capped bucket for the whole run.
+    assert sum(plugged) == pytest.approx(6.0, abs=0.05)
+    assert sum(value > 0.99 for value in plugged) == 5
+    # The 3.6 % ramp is spread over the hours it fell in rather than dumped in
+    # the hour it finished.
+    assert sum(bucket.get(FIELD_DRIVE_KWH, 0.0) for bucket in hours.values()) == (
+        pytest.approx(2.16, abs=0.05)
+    )
+    assert sum(1 for bucket in hours.values() if bucket.get(FIELD_DRIVE_KWH, 0) > 0.01) >= 6
+
+    # The granular buckets are what make the plugged forecast usable by HAEO:
+    # six hour-of-day slots light up, and they are the same six the store holds.
+    points = hass.states.get(
+        "sensor.gac_aion_ut_plugged_flag_forecast"
+    ).attributes[ATTR_FORECAST]
+    plugged_slots = {
+        dt_util.parse_datetime(point["time"]).hour
+        for point in points
+        if point["value"] > 0.5
+    }
+    bucket_slots = {
+        dt_util.parse_datetime(key).hour
+        for key, bucket in hours.items()
+        if bucket.get(FIELD_PLUGED_HOURS, 0) > 0.5
+    }
+    assert plugged_slots == bucket_slots
+    assert len(bucket_slots) in (6, 7)
+
+
+async def test_config_flow_answers_a_bad_charger_page_with_form_errors(
     hass: HomeAssistant,
 ) -> None:
-    """Missing source entities re-show the form; they never fail validation."""
+    """A page that names a missing entity re-shows itself; validation never 400s."""
     hass.states.async_set(CONFIG[CONF_SOC_ENTITY], "40.0")
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
@@ -152,25 +224,64 @@ async def test_config_flow_answers_a_partial_submission_with_form_errors(
         data={CONF_SOC_ENTITY: CONFIG[CONF_SOC_ENTITY]},
     )
     assert result["type"] == FlowResultType.FORM
-    assert result["step_id"] == "user"
+    assert result["step_id"] == "charger"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={CONF_PLUGGED_ENTITY: "binary_sensor.not_there"}
+    )
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "charger"
     assert result["errors"] == {CONF_PLUGGED_ENTITY: "entity_not_found"}
 
 
-async def test_config_flow_types_form_output_and_derives_a_title(
+async def test_config_flow_requires_state_lists_for_a_status_sensor(
+    hass: HomeAssistant,
+) -> None:
+    """A word-valued plugged entity needs lists, or every state reads unplugged."""
+    hass.states.async_set(CONFIG[CONF_SOC_ENTITY], "40.0")
+    hass.states.async_set("sensor.de_ev_charger_status", "plugged_in")
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "user"},
+        data={CONF_SOC_ENTITY: CONFIG[CONF_SOC_ENTITY]},
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={CONF_PLUGGED_ENTITY: "sensor.de_ev_charger_status"},
+    )
+    assert result["errors"] == {CONF_PLUGGED_STATES: "states_required"}
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_PLUGGED_ENTITY: "sensor.de_ev_charger_status",
+            CONF_PLUGGED_STATES: ["plugged_in", "waiting", "Charging"],
+        },
+    )
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "forecast"
+
+
+async def test_config_flow_walks_three_pages_and_types_the_form_output(
     hass: HomeAssistant,
 ) -> None:
     """Strings from the UI become numbers, and a blank name still sizes entities."""
     hass.states.async_set(CONFIG[CONF_SOC_ENTITY], "40.0", {"friendly_name": "Aion UT"})
-    hass.states.async_set(CONFIG[CONF_PLUGGED_ENTITY], "on")
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": "user"},
-        data={
-            CONF_SOC_ENTITY: CONFIG[CONF_SOC_ENTITY],
-            CONF_PLUGGED_ENTITY: CONFIG[CONF_PLUGGED_ENTITY],
-            CONF_CAPACITY: "60",
-            CONF_HORIZON: "72",
-        },
+        data={CONF_SOC_ENTITY: CONFIG[CONF_SOC_ENTITY], CONF_CAPACITY: "60"},
+    )
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "charger"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={CONF_PLUGGED_ENTITY: CONFIG[CONF_PLUGGED_ENTITY]},
+    )
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "forecast"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={CONF_HORIZON: "72"}
     )
     assert result["type"] == FlowResultType.CREATE_ENTRY
     entry = hass.config_entries.async_get_entry(result["entry_id"])
@@ -181,20 +292,23 @@ async def test_config_flow_types_form_output_and_derives_a_title(
     assert isinstance(entry.data[CONF_HORIZON], int)
     assert entry.data[CONF_CAPACITY] == 60.0
     assert isinstance(entry.data[CONF_CAPACITY], float)
+    # Keys the pages left at their defaults still reach the entry, so a page
+    # can never overwrite another page's value with its own default.
+    assert entry.data[CONF_PLUGGED_ENTITY] == CONFIG[CONF_PLUGGED_ENTITY]
+    assert entry.data[CONF_EFFICIENCY] == 85.0
+    assert entry.data[CONF_SOC_WINDOW] == 10
+    assert entry.data[CONF_HISTORY_DAYS] == 7
 
 
 async def test_config_flow_aborts_when_the_soc_sensor_is_claimed(
     hass: HomeAssistant,
 ) -> None:
-    """One usage model per state-of-charge sensor."""
+    """One usage model per state-of-charge sensor, caught on the first page."""
     await setup(hass)
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": "user"},
-        data={
-            CONF_SOC_ENTITY: CONFIG[CONF_SOC_ENTITY],
-            CONF_PLUGGED_ENTITY: CONFIG[CONF_PLUGGED_ENTITY],
-        },
+        data={CONF_SOC_ENTITY: CONFIG[CONF_SOC_ENTITY]},
     )
     assert result["type"] == FlowResultType.ABORT
     assert result["reason"] == "already_configured"
@@ -211,10 +325,68 @@ async def test_options_flow_applies_a_new_charge_rate_live(
     result = await hass.config_entries.options.async_configure(
         form["flow_id"], user_input={CONF_CHARGE_RATE: 7.4}
     )
+    assert result["step_id"] == "charger"
+    # The strict pages pre-fill everything, so an empty submission keeps the
+    # stored values.
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={}
+    )
+    assert result["step_id"] == "forecast"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={}
+    )
     assert result["type"] == FlowResultType.CREATE_ENTRY
     await hass.async_block_till_done()
     assert entry.options[CONF_CHARGE_RATE] == 7.4
     assert hass.states.get("sensor.gac_aion_ut_charge_rate").state == "7.4"
+
+
+async def test_options_flow_revalidates_the_charger_page(hass: HomeAssistant) -> None:
+    """Retuning cannot point the model at an entity that is gone or uninterpretable."""
+    entry = await setup(hass)
+    hass.states.async_set("sensor.de_ev_charger_status", "plugged_in")
+    form = await hass.config_entries.options.async_init(entry.entry_id)
+    step = await hass.config_entries.options.async_configure(
+        form["flow_id"], user_input={}
+    )
+    assert step["step_id"] == "charger"
+
+    missing = await hass.config_entries.options.async_configure(
+        step["flow_id"], user_input={CONF_PLUGGED_ENTITY: "sensor.gone_away"}
+    )
+    assert missing["type"] == FlowResultType.FORM
+    assert missing["step_id"] == "charger"
+    assert missing["errors"] == {CONF_PLUGGED_ENTITY: "entity_not_found"}
+
+    lists = await hass.config_entries.options.async_configure(
+        step["flow_id"], user_input={CONF_PLUGGED_ENTITY: "sensor.de_ev_charger_status"}
+    )
+    assert lists["errors"] == {CONF_PLUGGED_STATES: "states_required"}
+
+    accepted = await hass.config_entries.options.async_configure(
+        step["flow_id"],
+        user_input={
+            CONF_PLUGGED_ENTITY: "sensor.de_ev_charger_status",
+            CONF_PLUGGED_STATES: ["plugged_in", "waiting", "charged", "paused"],
+            CONF_UNPLUGGED_STATES: ["sleep", "idle"],
+            CONF_CHARGING_STATES: ["charging"],
+        },
+    )
+    assert accepted["step_id"] == "forecast"
+    result = await hass.config_entries.options.async_configure(
+        accepted["flow_id"], user_input={}
+    )
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+    assert entry.options[CONF_PLUGGED_ENTITY] == "sensor.de_ev_charger_status"
+    assert entry.options[CONF_PLUGGED_STATES] == [
+        "plugged_in",
+        "waiting",
+        "charged",
+        "paused",
+    ]
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.gac_aion_ut_plugged_flag").state == "1"
 
 
 @pytest.mark.parametrize(

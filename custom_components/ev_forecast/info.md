@@ -12,8 +12,12 @@ signals an optimizer needs to schedule charging:
 
 Owns its own hour buckets, so `ev_forecast.backfill_history` seeds the
 forecasts from recorder history on day one instead of waiting a week for
-accumulation, and `ev_forecast.plan_trip` adds trips the historical pattern
-cannot know about.
+accumulation: the replay ticks at the same five-minute cadence the live model
+polls at, so a six-hour plugged run becomes six hour buckets rather than one,
+and only empty buckets are written. `ev_forecast.plan_trip` adds trips the
+historical pattern cannot know about.
+
+Setup and retuning are three pages - the car, the charger, the forecast.
 
 One config entry per EV. No dependency on HAFO, HAEO or a specific car brand:
 any numeric SoC sensor plus a plugged-in entity will do. The plugged input can
