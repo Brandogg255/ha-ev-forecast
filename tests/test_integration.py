@@ -14,6 +14,7 @@ import pytest
 pytest.importorskip("pytest_homeassistant_custom_component")
 
 from homeassistant.config_entries import ConfigEntryState  # noqa: E402
+from homeassistant.data_entry_flow import FlowResultType  # noqa: E402
 from homeassistant.core import HomeAssistant  # noqa: E402
 from homeassistant.util import dt as dt_util  # noqa: E402
 from pytest_homeassistant_custom_component.common import MockConfigEntry  # noqa: E402
@@ -135,3 +136,79 @@ async def test_soc_drop_accumulates_drive_energy(hass: HomeAssistant) -> None:
     assert hass.states.get("sensor.gac_aion_ut_drive_energy_daily").state == "0.3"
     assert float(hass.states.get("sensor.gac_aion_ut_drive_power").state) > 0.0
     assert float(hass.states.get("sensor.gac_aion_ut_soc_power").state) < 0.0
+
+
+async def test_config_flow_answers_a_partial_submission_with_form_errors(
+    hass: HomeAssistant,
+) -> None:
+    """Missing source entities re-show the form; they never fail validation."""
+    hass.states.async_set(CONFIG[CONF_SOC_ENTITY], "40.0")
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "user"},
+        data={CONF_SOC_ENTITY: CONFIG[CONF_SOC_ENTITY]},
+    )
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "user"
+    assert result["errors"] == {CONF_PLUGGED_ENTITY: "entity_not_found"}
+
+
+async def test_config_flow_types_form_output_and_derives_a_title(
+    hass: HomeAssistant,
+) -> None:
+    """Strings from the UI become numbers, and a blank name still sizes entities."""
+    hass.states.async_set(CONFIG[CONF_SOC_ENTITY], "40.0", {"friendly_name": "Aion UT"})
+    hass.states.async_set(CONFIG[CONF_PLUGGED_ENTITY], "on")
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "user"},
+        data={
+            CONF_SOC_ENTITY: CONFIG[CONF_SOC_ENTITY],
+            CONF_PLUGGED_ENTITY: CONFIG[CONF_PLUGGED_ENTITY],
+            CONF_CAPACITY: "60",
+            CONF_HORIZON: "72",
+        },
+    )
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    entry = hass.config_entries.async_get_entry(result["entry_id"])
+    assert entry.title == "Aion UT"
+    assert entry.unique_id == CONFIG[CONF_SOC_ENTITY]
+    assert entry.data[CONF_NAME] == "Aion UT"
+    assert entry.data[CONF_HORIZON] == 72
+    assert isinstance(entry.data[CONF_HORIZON], int)
+    assert entry.data[CONF_CAPACITY] == 60.0
+    assert isinstance(entry.data[CONF_CAPACITY], float)
+
+
+async def test_config_flow_aborts_when_the_soc_sensor_is_claimed(
+    hass: HomeAssistant,
+) -> None:
+    """One usage model per state-of-charge sensor."""
+    await setup(hass)
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "user"},
+        data={
+            CONF_SOC_ENTITY: CONFIG[CONF_SOC_ENTITY],
+            CONF_PLUGGED_ENTITY: CONFIG[CONF_PLUGGED_ENTITY],
+        },
+    )
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+
+
+async def test_options_flow_applies_a_new_charge_rate_live(
+    hass: HomeAssistant,
+) -> None:
+    """Tuning the model does not need the entry recreated."""
+    entry = await setup(hass)
+    form = await hass.config_entries.options.async_init(entry.entry_id)
+    assert form["type"] == FlowResultType.FORM
+    assert form["step_id"] == "init"
+    result = await hass.config_entries.options.async_configure(
+        form["flow_id"], user_input={CONF_CHARGE_RATE: 7.4}
+    )
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+    assert entry.options[CONF_CHARGE_RATE] == 7.4
+    assert hass.states.get("sensor.gac_aion_ut_charge_rate").state == "7.4"

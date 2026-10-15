@@ -33,6 +33,7 @@ from .const import (
     DEFAULT_CHARGE_RATE,
     DEFAULT_EFFICIENCY,
     DEFAULT_HISTORY_DAYS,
+    DEFAULT_HORIZON,
     DEFAULT_MAX_SOC,
     DEFAULT_SOC_WINDOW,
     DOMAIN,
@@ -44,103 +45,106 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-HORIZON_CHOICES = [24, 48, 72, 120, 168]
+# Select selectors exchange strings with the UI, so the horizon choices are
+# strings and are coerced back to int when the entry is written.
+HORIZON_CHOICES = ["24", "48", "72", "120", "168"]
+
+_FLOAT_KEYS: dict[str, float] = {
+    CONF_CAPACITY: DEFAULT_CAPACITY,
+    CONF_EFFICIENCY: DEFAULT_EFFICIENCY,
+    CONF_CHARGE_RATE: DEFAULT_CHARGE_RATE,
+    CONF_BUFFER: DEFAULT_BUFFER,
+    CONF_MAX_SOC: DEFAULT_MAX_SOC,
+}
+_INT_KEYS: dict[str, int] = {
+    CONF_HISTORY_DAYS: DEFAULT_HISTORY_DAYS,
+    CONF_SOC_WINDOW: DEFAULT_SOC_WINDOW,
+    CONF_HORIZON: DEFAULT_HORIZON,
+}
 
 
-def _schema(defaults: dict[str, Any]) -> vol.Schema:
-    """Build the shared config/options form for one EV."""
+def _number(
+    minimum: float,
+    maximum: float,
+    step: float,
+    unit: str | None = None,
+    mode: selector.NumberSelectorMode = selector.NumberSelectorMode.BOX,
+) -> selector.NumberSelector:
+    """Build a bounded number selector, omitting the unit when there is none."""
+    config: dict[str, Any] = {"min": minimum, "max": maximum, "step": step, "mode": mode}
+    if unit is not None:
+        config["unit_of_measurement"] = unit
+    return selector.NumberSelector(selector.NumberSelectorConfig(**config))
+
+
+def _schema(defaults: dict[str, Any], *, strict: bool) -> vol.Schema:
+    """Build the config or options form for one EV.
+
+    ``strict`` is what the options flow uses: every field is pre-filled with
+    the stored value. The user step leaves the two entity pickers with no
+    value at all, so a submission that omits one re-shows the form with an
+    error instead of failing schema validation with a hard 400.
+    """
+
+    def prefilled(key: str, default: Any) -> vol.Optional:
+        return vol.Optional(key, default=defaults.get(key, default))
+
+    def picker(key: str) -> vol.Optional:
+        if strict:
+            return vol.Optional(key, default=defaults.get(key))
+        return vol.Optional(key)
+
     return vol.Schema(
         {
-            vol.Required(CONF_NAME, default=defaults.get(CONF_NAME)): cv.string,
-            vol.Required(
-                CONF_SOC_ENTITY, default=defaults.get(CONF_SOC_ENTITY)
-            ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
-            vol.Required(
-                CONF_PLUGGED_ENTITY, default=defaults.get(CONF_PLUGGED_ENTITY)
-            ): selector.EntitySelector(selector.EntitySelectorConfig(domain="binary_sensor")),
-            vol.Required(
-                CONF_CAPACITY, default=defaults.get(CONF_CAPACITY, DEFAULT_CAPACITY)
-            ): selector.NumberSelector(
-                selector.NumberSelectorConfig(
-                    min=1,
-                    max=500,
-                    step=0.1,
-                    unit_of_measurement="kWh",
-                    mode=selector.NumberSelectorMode.BOX,
-                )
+            prefilled(CONF_NAME, ""): cv.string,
+            picker(CONF_SOC_ENTITY): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor")
             ),
-            vol.Required(
-                CONF_EFFICIENCY, default=defaults.get(CONF_EFFICIENCY, DEFAULT_EFFICIENCY)
-            ): selector.NumberSelector(
-                selector.NumberSelectorConfig(
-                    min=50,
-                    max=100,
-                    step=1,
-                    unit_of_measurement="%",
-                    mode=selector.NumberSelectorMode.SLIDER,
-                )
+            picker(CONF_PLUGGED_ENTITY): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="binary_sensor")
             ),
-            vol.Required(
-                CONF_CHARGE_RATE, default=defaults.get(CONF_CHARGE_RATE, DEFAULT_CHARGE_RATE)
-            ): selector.NumberSelector(
-                selector.NumberSelectorConfig(
-                    min=0,
-                    max=50,
-                    step=0.1,
-                    unit_of_measurement="kW",
-                    mode=selector.NumberSelectorMode.BOX,
-                )
+            prefilled(CONF_CAPACITY, DEFAULT_CAPACITY): _number(1, 500, 0.1, "kWh"),
+            prefilled(CONF_EFFICIENCY, DEFAULT_EFFICIENCY): _number(
+                50, 100, 1, "%", selector.NumberSelectorMode.SLIDER
             ),
-            vol.Required(
-                CONF_BUFFER, default=defaults.get(CONF_BUFFER, DEFAULT_BUFFER)
-            ): selector.NumberSelector(
-                selector.NumberSelectorConfig(
-                    min=0,
-                    max=50,
-                    step=0.5,
-                    unit_of_measurement="kWh",
-                    mode=selector.NumberSelectorMode.BOX,
-                )
+            prefilled(CONF_CHARGE_RATE, DEFAULT_CHARGE_RATE): _number(0, 50, 0.1, "kW"),
+            prefilled(CONF_BUFFER, DEFAULT_BUFFER): _number(0, 50, 0.5, "kWh"),
+            prefilled(CONF_MAX_SOC, DEFAULT_MAX_SOC): _number(
+                10, 100, 1, "%", selector.NumberSelectorMode.SLIDER
             ),
-            vol.Required(
-                CONF_MAX_SOC, default=defaults.get(CONF_MAX_SOC, DEFAULT_MAX_SOC)
-            ): selector.NumberSelector(
-                selector.NumberSelectorConfig(
-                    min=10,
-                    max=100,
-                    step=1,
-                    unit_of_measurement="%",
-                    mode=selector.NumberSelectorMode.SLIDER,
-                )
+            prefilled(CONF_HISTORY_DAYS, DEFAULT_HISTORY_DAYS): _number(
+                MIN_HISTORY_DAYS, MAX_HISTORY_DAYS, 1
             ),
-            vol.Required(
-                CONF_HISTORY_DAYS, default=defaults.get(CONF_HISTORY_DAYS, DEFAULT_HISTORY_DAYS)
-            ): selector.NumberSelector(
-                selector.NumberSelectorConfig(
-                    min=MIN_HISTORY_DAYS,
-                    max=MAX_HISTORY_DAYS,
-                    step=1,
-                    mode=selector.NumberSelectorMode.BOX,
-                )
+            prefilled(CONF_SOC_WINDOW, DEFAULT_SOC_WINDOW): _number(
+                MIN_SOC_WINDOW, MAX_SOC_WINDOW, 1, "min"
             ),
-            vol.Required(
-                CONF_SOC_WINDOW, default=defaults.get(CONF_SOC_WINDOW, DEFAULT_SOC_WINDOW)
-            ): selector.NumberSelector(
-                selector.NumberSelectorConfig(
-                    min=MIN_SOC_WINDOW,
-                    max=MAX_SOC_WINDOW,
-                    step=1,
-                    unit_of_measurement="min",
-                    mode=selector.NumberSelectorMode.BOX,
-                )
-            ),
-            vol.Required(
-                CONF_HORIZON, default=defaults.get(CONF_HORIZON, 72)
+            vol.Optional(
+                CONF_HORIZON,
+                default=str(defaults.get(CONF_HORIZON, DEFAULT_HORIZON)),
             ): selector.SelectSelector(
-                selector.SelectSelectorConfig(options=HORIZON_CHOICES, translation_key="horizon_hours")
+                selector.SelectSelectorConfig(
+                    options=HORIZON_CHOICES, translation_key="horizon_hours"
+                )
             ),
         }
     )
+
+
+def _normalise(user_input: dict[str, Any]) -> dict[str, Any]:
+    """Type the form output so entry data is numbers, not strings."""
+    data = dict(user_input)
+    data[CONF_NAME] = str(data.get(CONF_NAME, "")).strip()
+    for key, fallback in _FLOAT_KEYS.items():
+        data[key] = float(data.get(key, fallback))
+    for key, fallback in _INT_KEYS.items():
+        data[key] = int(data.get(key, fallback))
+    return data
+
+
+def _derived_name(friendly_name: Any, entity_id: str) -> str:
+    """Fall back to the state-of-charge sensor's name when none was given."""
+    label = str(friendly_name or entity_id.split(".", 1)[-1]).replace("_", " ").strip()
+    return label or entity_id
 
 
 class EVForecastConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -148,17 +152,28 @@ class EVForecastConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
-            soc_entity = user_input[CONF_SOC_ENTITY]
-            if self.hass.states.get(soc_entity) is None:
-                errors[CONF_SOC_ENTITY] = "entity_not_found"
-            else:
-                await self.async_set_unique_id(soc_entity)
+            data = _normalise(user_input)
+            for key in (CONF_SOC_ENTITY, CONF_PLUGGED_ENTITY):
+                entity = data.get(key)
+                if not entity or self.hass.states.get(str(entity)) is None:
+                    errors[key] = "entity_not_found"
+            if not errors:
+                await self.async_set_unique_id(str(data[CONF_SOC_ENTITY]))
                 self._abort_if_unique_id_configured()
-                return self.async_create_entry(title=user_input[CONF_NAME], data=user_input)
-        return self.async_show_form(step_id="user", data_schema=_schema({}), errors=errors)
+                if not data[CONF_NAME]:
+                    state = self.hass.states.get(str(data[CONF_SOC_ENTITY]))
+                    data[CONF_NAME] = _derived_name(
+                        state.attributes.get("friendly_name"), str(data[CONF_SOC_ENTITY])
+                    )
+                return self.async_create_entry(title=data[CONF_NAME], data=data)
+        return self.async_show_form(
+            step_id="user", data_schema=_schema({}, strict=False), errors=errors
+        )
 
     @staticmethod
     @callback
@@ -169,10 +184,15 @@ class EVForecastConfigFlow(ConfigFlow, domain=DOMAIN):
 class OptionsFlowHandler(OptionsFlow):
     """Tune the model without recreating the entities."""
 
-    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            # The strict schema pre-fills every field, so this submission is
+            # complete; the coordinator overlays options on entry data.
+            return self.async_create_entry(title="", data=_normalise(user_input))
         entry: ConfigEntry = self.config_entry
         return self.async_show_form(
-            step_id="init", data_schema=_schema({**entry.data, **entry.options})
+            step_id="init",
+            data_schema=_schema({**entry.data, **entry.options}, strict=True),
         )

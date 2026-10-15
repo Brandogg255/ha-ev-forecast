@@ -5,7 +5,7 @@
         "title": "EV usage model",
         "description": "Pick the EV's state-of-charge and plugged-in sensors, then set the pack parameters used to size charging.",
         "data": {
-          "name": "EV name",
+          "ev_name": "EV name",
           "soc_entity_id": "State of charge sensor",
           "plugged_entity_id": "Plugged-in binary sensor",
           "capacity_kwh": "Usable pack capacity",
@@ -18,7 +18,7 @@
           "horizon_hours": "Sizing horizon"
         },
         "data_description": {
-          "name": "Used for entity ids, for example \"GAC Aion UT\" gives sensor.gac_aion_ut_charge_rate_forecast.",
+          "ev_name": "Used for entity ids, for example \"GAC Aion UT\" gives sensor.gac_aion_ut_charge_rate_forecast.",
           "soc_entity_id": "A sensor whose state is the pack percentage (0-100). Its slope drives the drive-power signal.",
           "plugged_entity_id": "on while the cable is connected. Drives the charge-rate and plugged forecasts.",
           "capacity_kwh": "Usable energy in the pack; converts percentage into kW and kWh.",
@@ -27,13 +27,26 @@
           "buffer_kwh": "Extra energy kept above the trip requirement.",
           "max_soc_pct": "Cap for the required state of charge, so an unreachable target never pins charging to the maximum.",
           "history_days": "Days of hour buckets averaged for the forecasts.",
-          "soc_window_minutes": "Window used for the state-of-charge slope; shorter reacts faster, longer is smoother.",
+          "soc_window_minutes": "Minutes of state-of-charge movement used for the live power signals.",
           "horizon_hours": "How far ahead the required state of charge looks for trips."
         }
       },
       "init": {
         "title": "EV usage model",
-        "description": "Tune the model. Changes apply without recreating the entities; changing the source entities reloads the entry."
+        "description": "Tune the model. Changes apply without recreating the entities; changing the source entities reloads the entry.",
+        "data": {
+          "ev_name": "EV name",
+          "soc_entity_id": "State of charge sensor",
+          "plugged_entity_id": "Plugged-in binary sensor",
+          "capacity_kwh": "Usable pack capacity",
+          "efficiency_pct": "Charging efficiency",
+          "charge_rate_kw": "Charge rate",
+          "buffer_kwh": "Comfort buffer",
+          "max_soc_pct": "Maximum state of charge",
+          "history_days": "Pattern history",
+          "soc_window_minutes": "State-of-charge window",
+          "horizon_hours": "Sizing horizon"
+        }
       }
     },
     "error": {

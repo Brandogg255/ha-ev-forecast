@@ -10,7 +10,9 @@ from homeassistant.const import Platform
 DOMAIN: Final = "ev_forecast"
 PLATFORMS: Final = [Platform.SENSOR]
 
-CONF_NAME: Final = "name"
+# Not "name": the ha-mcp config-entry tools treat ``name`` as their own
+# parameter and drop it from the flow payload, so the field would arrive empty.
+CONF_NAME: Final = "ev_name"
 CONF_SOC_ENTITY: Final = "soc_entity_id"
 CONF_PLUGGED_ENTITY: Final = "plugged_entity_id"
 CONF_CAPACITY: Final = "capacity_kwh"
