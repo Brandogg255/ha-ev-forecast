@@ -10,6 +10,9 @@ negative = energy out of the battery (driving, vampire drain).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from typing import Any
+
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -313,3 +316,48 @@ def fill_missing(
         return False
     bucket[field] = round(float(value), 4)
     return True
+
+
+def normalise_state_list(values: Any) -> tuple[str, ...]:
+    """Clean a user-supplied state list: trimmed, lower-cased, de-duplicated.
+
+    A bare string is treated as one value, so a hand-edited entry that stores
+    ``"plugged_in"`` instead of ``["plugged_in"]`` cannot silently explode into
+    single characters.
+    """
+    if isinstance(values, str):
+        values = [values]
+    cleaned: list[str] = []
+    for value in values or ():
+        if value is None:
+            continue
+        text = str(value).strip().lower()
+        if text and text not in cleaned:
+            cleaned.append(text)
+    return tuple(cleaned)
+
+
+def classify_connection(
+    state: Any,
+    plugged_states: Sequence[str] = (),
+    unplugged_states: Sequence[str] = (),
+    charging_states: Sequence[str] = (),
+) -> tuple[bool, bool]:
+    """Map one connection-status state onto ``(plugged, charging)``.
+
+    With all three lists empty the binary-sensor rule applies: ``on`` means the
+    cable is connected, and charging cannot be told apart from being plugged in.
+    Once any list is filled the state is matched case-insensitively against
+    them: an entry in ``unplugged_states`` wins outright, otherwise an entry in
+    ``charging_states`` implies the cable is connected as well as charging.
+    Anything that matches nothing - including ``unknown`` and ``unavailable`` -
+    reads as disconnected, so a dropped-out charger never looks like free power.
+    """
+    text = str(state if state is not None else "").strip().lower()
+    if not plugged_states and not unplugged_states and not charging_states:
+        connected = text == "on"
+        return connected, connected
+    if text in unplugged_states:
+        return False, False
+    charging = text in charging_states
+    return charging or text in plugged_states, charging

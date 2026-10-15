@@ -17,14 +17,17 @@ from .const import (
     CONF_BUFFER,
     CONF_CAPACITY,
     CONF_CHARGE_RATE,
+    CONF_CHARGING_STATES,
     CONF_EFFICIENCY,
     CONF_HISTORY_DAYS,
     CONF_HORIZON,
     CONF_MAX_SOC,
     CONF_NAME,
     CONF_PLUGGED_ENTITY,
+    CONF_PLUGGED_STATES,
     CONF_SOC_ENTITY,
     CONF_SOC_WINDOW,
+    CONF_UNPLUGGED_STATES,
     DEFAULT_FORECAST_HOURS,
     DOMAIN,
     RETENTION_MULTIPLIER,
@@ -35,6 +38,7 @@ from .model import (
     FIELD_PLUGED_HOURS,
     FIELD_RATE_MAX,
     accumulate_interval,
+    classify_connection,
     daily_total,
     drive_energy_kwh,
     drive_power_kw,
@@ -42,6 +46,7 @@ from .model import (
     historical_forecast,
     hour_key,
     merge_planned_trips,
+    normalise_state_list,
     prune_samples,
     required_soc_pct,
     soc_power_kw,
@@ -64,6 +69,9 @@ class EVModelConfig:
     name: str
     soc_entity_id: str
     plugged_entity_id: str
+    plugged_states: tuple[str, ...]
+    unplugged_states: tuple[str, ...]
+    charging_states: tuple[str, ...]
     capacity_kwh: float
     efficiency_pct: float
     charge_rate_kw: float
@@ -81,6 +89,9 @@ class EVModelConfig:
             name=str(merged[CONF_NAME]),
             soc_entity_id=str(merged[CONF_SOC_ENTITY]),
             plugged_entity_id=str(merged[CONF_PLUGGED_ENTITY]),
+            plugged_states=normalise_state_list(merged.get(CONF_PLUGGED_STATES, ())),
+            unplugged_states=normalise_state_list(merged.get(CONF_UNPLUGGED_STATES, ())),
+            charging_states=normalise_state_list(merged.get(CONF_CHARGING_STATES, ())),
             capacity_kwh=float(merged[CONF_CAPACITY]),
             efficiency_pct=float(merged[CONF_EFFICIENCY]),
             charge_rate_kw=float(merged[CONF_CHARGE_RATE]),
@@ -131,7 +142,7 @@ class EVUsageCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._previous = None
             raise UpdateFailed(f"{config.soc_entity_id} has no numeric state")
 
-        plugged = self._is_on(config.plugged_entity_id)
+        plugged, charging = self._connection(config.plugged_entity_id)
         self._accumulate(now, soc, plugged)
         self._soc_samples.append((now, soc))
         window = timedelta(minutes=config.soc_window_minutes)
@@ -168,6 +179,7 @@ class EVUsageCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "drive_energy": window_total(self.store.hours, FIELD_DRIVE_KWH),
             "drive_energy_daily": round(daily_total(self.store.hours, FIELD_DRIVE_KWH, now), 3),
             "plugged_flag": 1 if plugged else 0,
+            "charging_flag": 1 if charging else 0,
             "charge_rate": rate_now,
             "soc_required": soc_required,
             "drive_forecast": drive_forecast,
@@ -262,8 +274,10 @@ class EVUsageCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.error("Backfill for %s failed: %s", self.config.name, err)
             return {"error": 1, "hours": 0}
 
-        soc_series = self._as_series(result.get(self.config.soc_entity_id))
-        plugged_series = self._as_series(result.get(self.config.plugged_entity_id))
+        soc_series = self._as_numeric_series(result.get(self.config.soc_entity_id))
+        plugged_series = self._as_connection_series(
+            result.get(self.config.plugged_entity_id)
+        )
 
         filled = 0
         capacity = self.config.capacity_kwh
@@ -303,25 +317,49 @@ class EVUsageCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self.async_request_refresh()
         return {"hours": filled, "plugged_hours": plugged_hours}
 
-    def _as_series(self, states: Any) -> list[tuple[datetime, Any]]:
-        series: list[tuple[datetime, Any]] = []
+    def _state_pair(self, state: Any) -> tuple[Any, Any]:
+        """Return ``(stamp, raw_state)`` for a recorder row or live state."""
+        stamp = getattr(state, "last_changed", None)
+        raw = getattr(state, "state", None)
+        if raw is None and isinstance(state, dict):
+            stamp = dt_util.parse_datetime(str(state.get("last_changed")))
+            raw = state.get("state")
+        return stamp, raw
+
+    def _as_numeric_series(self, states: Any) -> list[tuple[datetime, float]]:
+        series: list[tuple[datetime, float]] = []
         for state in states or []:
-            stamp = getattr(state, "last_changed", None)
-            raw = getattr(state, "state", None)
-            if raw is None and isinstance(state, dict):
-                stamp = dt_util.parse_datetime(str(state.get("last_changed")))
-                raw = state.get("state")
+            stamp, raw = self._state_pair(state)
             if stamp is None or raw is None:
                 continue
-            value: Any
-            if raw in ("on", "off"):
-                value = raw == "on"
-            else:
-                try:
-                    value = float(raw)
-                except (TypeError, ValueError):
-                    continue
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
             series.append((dt_util.as_local(stamp), value))
+        series.sort(key=lambda item: item[0])
+        return series
+
+    def _as_connection_series(self, states: Any) -> list[tuple[datetime, bool]]:
+        """Replay connection history through the classifier the live path uses.
+
+        A charger status sensor reports words, not ``on``/``off``, so backfill
+        has to map them with the same lists the user configured or the plugged
+        hours would disagree with the live ones.
+        """
+        config = self.config
+        series: list[tuple[datetime, bool]] = []
+        for state in states or []:
+            stamp, raw = self._state_pair(state)
+            if stamp is None or raw is None:
+                continue
+            plugged, _ = classify_connection(
+                raw,
+                config.plugged_states,
+                config.unplugged_states,
+                config.charging_states,
+            )
+            series.append((dt_util.as_local(stamp), plugged))
         series.sort(key=lambda item: item[0])
         return series
 
@@ -351,6 +389,14 @@ class EVUsageCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except (TypeError, ValueError):
             return None
 
-    def _is_on(self, entity_id: str) -> bool:
+    def _connection(self, entity_id: str) -> tuple[bool, bool]:
+        """Classify the plugged entity's current state as (plugged, charging)."""
         state = self.hass.states.get(entity_id)
-        return state is not None and state.state == "on"
+        if state is None or state.state in ("unknown", "unavailable"):
+            return False, False
+        return classify_connection(
+            state.state,
+            self.config.plugged_states,
+            self.config.unplugged_states,
+            self.config.charging_states,
+        )

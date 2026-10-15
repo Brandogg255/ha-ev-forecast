@@ -20,14 +20,17 @@ from .const import (
     CONF_BUFFER,
     CONF_CAPACITY,
     CONF_CHARGE_RATE,
+    CONF_CHARGING_STATES,
     CONF_EFFICIENCY,
     CONF_HISTORY_DAYS,
     CONF_HORIZON,
     CONF_MAX_SOC,
     CONF_NAME,
     CONF_PLUGGED_ENTITY,
+    CONF_PLUGGED_STATES,
     CONF_SOC_ENTITY,
     CONF_SOC_WINDOW,
+    CONF_UNPLUGGED_STATES,
     DEFAULT_BUFFER,
     DEFAULT_CAPACITY,
     DEFAULT_CHARGE_RATE,
@@ -42,6 +45,7 @@ from .const import (
     MIN_HISTORY_DAYS,
     MIN_SOC_WINDOW,
 )
+from .model import normalise_state_list
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -76,6 +80,17 @@ def _number(
         config["unit_of_measurement"] = unit
     return selector.NumberSelector(selector.NumberSelectorConfig(**config))
 
+def _tags() -> selector.SelectSelector:
+    """Free-form tag list: the user types the states their charger reports."""
+    return selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=[],
+            multiple=True,
+            custom_value=True,
+            mode=selector.SelectSelectorMode.TAGS,
+        )
+    )
+
 
 def _schema(defaults: dict[str, Any], *, strict: bool) -> vol.Schema:
     """Build the config or options form for one EV.
@@ -101,8 +116,13 @@ def _schema(defaults: dict[str, Any], *, strict: bool) -> vol.Schema:
                 selector.EntitySelectorConfig(domain="sensor")
             ),
             picker(CONF_PLUGGED_ENTITY): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="binary_sensor")
+                selector.EntitySelectorConfig(
+                    domain=["binary_sensor", "sensor"]
+                )
             ),
+            prefilled(CONF_PLUGGED_STATES, []): _tags(),
+            prefilled(CONF_UNPLUGGED_STATES, []): _tags(),
+            prefilled(CONF_CHARGING_STATES, []): _tags(),
             prefilled(CONF_CAPACITY, DEFAULT_CAPACITY): _number(1, 500, 0.1, "kWh"),
             prefilled(CONF_EFFICIENCY, DEFAULT_EFFICIENCY): _number(
                 50, 100, 1, "%", selector.NumberSelectorMode.SLIDER
@@ -138,6 +158,8 @@ def _normalise(user_input: dict[str, Any]) -> dict[str, Any]:
         data[key] = float(data.get(key, fallback))
     for key, fallback in _INT_KEYS.items():
         data[key] = int(data.get(key, fallback))
+    for key in (CONF_PLUGGED_STATES, CONF_UNPLUGGED_STATES, CONF_CHARGING_STATES):
+        data[key] = list(normalise_state_list(data.get(key, ())))
     return data
 
 
@@ -162,6 +184,13 @@ class EVForecastConfigFlow(ConfigFlow, domain=DOMAIN):
                 entity = data.get(key)
                 if not entity or self.hass.states.get(str(entity)) is None:
                     errors[key] = "entity_not_found"
+            # A status sensor reports words, not on/off: without at least one
+            # list every state would read as disconnected, silently.
+            plugged_id = str(data.get(CONF_PLUGGED_ENTITY) or "")
+            if plugged_id and not plugged_id.startswith("binary_sensor."):
+                buckets = (CONF_PLUGGED_STATES, CONF_UNPLUGGED_STATES, CONF_CHARGING_STATES)
+                if not any(normalise_state_list(data.get(key)) for key in buckets):
+                    errors[CONF_PLUGGED_STATES] = "states_required"
             if not errors:
                 await self.async_set_unique_id(str(data[CONF_SOC_ENTITY]))
                 self._abort_if_unique_id_configured()

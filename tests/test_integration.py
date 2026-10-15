@@ -25,14 +25,17 @@ from custom_components.ev_forecast.const import (  # noqa: E402
     CONF_BUFFER,
     CONF_CAPACITY,
     CONF_CHARGE_RATE,
+    CONF_CHARGING_STATES,
     CONF_EFFICIENCY,
     CONF_HISTORY_DAYS,
     CONF_HORIZON,
     CONF_MAX_SOC,
     CONF_NAME,
     CONF_PLUGGED_ENTITY,
+    CONF_PLUGGED_STATES,
     CONF_SOC_ENTITY,
     CONF_SOC_WINDOW,
+    CONF_UNPLUGGED_STATES,
     DEFAULT_FORECAST_HOURS,
     DOMAIN,
     SERVICE_CLEAR_TRIPS,
@@ -212,3 +215,52 @@ async def test_options_flow_applies_a_new_charge_rate_live(
     await hass.async_block_till_done()
     assert entry.options[CONF_CHARGE_RATE] == 7.4
     assert hass.states.get("sensor.gac_aion_ut_charge_rate").state == "7.4"
+
+
+@pytest.mark.parametrize(
+    ("status", "plugged_flag", "charging_flag", "charge_rate"),
+    [
+        ("charging", "1", "1", "3.3"),
+        ("paused", "1", "0", "3.3"),
+        ("sleep", "0", "0", "0.0"),
+        ("unknown", "0", "0", "0.0"),
+    ],
+)
+async def test_status_sensor_maps_configured_state_buckets(
+    hass: HomeAssistant,
+    status: str,
+    plugged_flag: str,
+    charging_flag: str,
+    charge_rate: str,
+) -> None:
+    """A word-valued charger status sensor drives the same signals as a binary one.
+
+    The charging list is deliberately written ``Charging`` to pin that the
+    lists are matched case-insensitively.
+    """
+    name = f"Wallbox {status}"
+    soc_entity = f"sensor.wallbox_{status}_soc"
+    hass.states.async_set(soc_entity, "40.0")
+    hass.states.async_set("sensor.de_ev_charger_status", status)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title=name,
+        data={
+            **CONFIG,
+            CONF_NAME: name,
+            CONF_SOC_ENTITY: soc_entity,
+            CONF_PLUGGED_ENTITY: "sensor.de_ev_charger_status",
+            CONF_PLUGGED_STATES: ["plugged in", "waiting", "charged", "paused"],
+            CONF_UNPLUGGED_STATES: ["sleep", "idle"],
+            CONF_CHARGING_STATES: ["Charging"],
+        },
+        version=1,
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    prefix = f"sensor.wallbox_{status}"
+    assert hass.states.get(f"{prefix}_plugged_flag").state == plugged_flag
+    assert hass.states.get(f"{prefix}_charging_flag").state == charging_flag
+    assert hass.states.get(f"{prefix}_charge_rate").state == charge_rate

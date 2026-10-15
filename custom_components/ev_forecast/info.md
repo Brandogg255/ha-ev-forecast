@@ -16,4 +16,9 @@ accumulation, and `ev_forecast.plan_trip` adds trips the historical pattern
 cannot know about.
 
 One config entry per EV. No dependency on HAFO, HAEO or a specific car brand:
-any numeric SoC sensor plus a plugged-in binary sensor will do.
+any numeric SoC sensor plus a plugged-in entity will do. The plugged input can
+be a `binary_sensor` (`on` = connected) or any `sensor` whose state is a word -
+`sensor.de_ev_charger_status` reporting `plugged in`, `waiting`, `charged`,
+`paused`, `sleep`, `idle` or `charging`, for example - which you map with three
+free-form state lists. A `charging_flag` sensor separates plugged-but-idle from
+power actually flowing.

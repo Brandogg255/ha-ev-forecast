@@ -96,6 +96,13 @@ DESCRIPTIONS: tuple[EVSensorDescription, ...] = (
         icon="mdi:ev-station",
     ),
     EVSensorDescription(
+        key="charging_flag",
+        value_key="charging_flag",
+        name="Charging Flag",
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:battery-charging",
+    ),
+    EVSensorDescription(
         key="charge_rate",
         value_key="charge_rate",
         name="Charge Rate",

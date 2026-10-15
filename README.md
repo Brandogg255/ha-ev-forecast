@@ -59,7 +59,10 @@ Then **Settings → Devices & Services → Add Integration → EV Forecast**.
 | --- | --- | --- |
 | EV name | – | Drives entity ids: `GAC Aion UT` → `sensor.gac_aion_ut_charge_rate_forecast` |
 | State of charge sensor | – | Sensor whose state is the pack percentage (0-100) |
-| Plugged-in binary sensor | – | `on` while the cable is connected |
+| Plugged-in entity | – | `binary_sensor` that is `on` while connected, or a status `sensor` mapped below |
+| States that mean plugged in | empty | Status-sensor states where the cable is connected |
+| States that mean unplugged | empty | Status-sensor states where it is not |
+| States that mean charging | empty | Status-sensor states where power is flowing |
 | Usable pack capacity | 60 kWh | Converts percentage into kW and kWh |
 | Charging efficiency | 85 % | Wall-to-pack efficiency |
 | Charge rate | 3.3 kW | AC power drawn while plugged; used where no history exists |
@@ -71,6 +74,34 @@ Then **Settings → Devices & Services → Add Integration → EV Forecast**.
 
 Options are editable without recreating the entities; changing the source
 entities reloads the entry.
+
+### Plugged-in states
+
+Leave the three state lists empty and the plugged input is read the classic
+way: a `binary_sensor` whose state is `on` while the cable is connected.
+
+Fill the lists to use any `sensor` whose state is a word instead - a wallbox
+status sensor, for example. Matching ignores case and surrounding space, and
+the lists are free-form tags, so type exactly the states that entity reports.
+
+For `sensor.de_ev_charger_status`:
+
+| List | States |
+| --- | --- |
+| Plugged in | `plugged in`, `waiting`, `charged`, `paused` |
+| Unplugged | `sleep`, `idle` |
+| Charging | `charging` |
+
+An explicit *unplugged* state wins over the other two, so overlapping lists
+stay predictable. A *charging* state always counts as plugged in as well.
+Anything unmatched - including `unknown` and `unavailable` - reads as
+disconnected, so a charger that has dropped out never looks like free power.
+
+`plugged_flag`, `charge_rate`, `soc_required` and the plugged forecast key off
+**connected**, because that is the window in which the car *can* be charged;
+`charging_flag` is what separates plugged-but-idle from power actually
+flowing. Backfill replays the same lists over recorder history, so the
+historical plugged pattern agrees with the live one.
 
 ## Entities
 
@@ -84,6 +115,7 @@ For an EV named *GAC Aion UT*:
 | `sensor.gac_aion_ut_drive_energy` | kWh | Drive energy across the retained window |
 | `sensor.gac_aion_ut_drive_energy_daily` | kWh | Drive energy today |
 | `sensor.gac_aion_ut_plugged_flag` | – | 1 plugged, 0 not |
+| `sensor.gac_aion_ut_charging_flag` | – | 1 while power is actually flowing |
 | `sensor.gac_aion_ut_charge_rate` | kW | Allowed charge rate right now |
 | `sensor.gac_aion_ut_soc_required` | % | Minimum SoC for the horizon |
 | `sensor.gac_aion_ut_charge_rate_forecast` | kW | Hourly forecast, `forecast` attribute |
