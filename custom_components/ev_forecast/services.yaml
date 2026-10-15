@@ -2,10 +2,14 @@ backfill_history:
   name: Backfill history
   description: >
     Replays the EV state-of-charge and plugged-in sensor history from the
-    Home Assistant recorder into the integration's own hour buckets. Only
-    empty buckets are written, so live data is never counted twice. Run this
-    once after adding an EV so the forecasts and the required state of charge
-    are useful on day one instead of after a week of accumulation.
+    Home Assistant recorder into the integration's own hour buckets. The
+    replay ticks at the same five-minute cadence the live model polls at and
+    folds every tick through the same accumulator, so a six-hour plugged run
+    becomes six hour buckets rather than one and a discharge ramp lands in the
+    hours it actually spanned. Only empty buckets are written, so live data is
+    never counted twice. Run this once after adding an EV so the forecasts and
+    the required state of charge are useful on day one instead of after a week
+    of accumulation.
   fields:
     entry_id:
       name: EV

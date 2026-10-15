@@ -10,6 +10,8 @@ negative = energy out of the battery (driving, vampire drain).
 
 from __future__ import annotations
 
+import bisect
+
 from collections.abc import Sequence
 from typing import Any
 
@@ -316,6 +318,82 @@ def fill_missing(
         return False
     bucket[field] = round(float(value), 4)
     return True
+
+
+def replay_history(
+    hours: dict[str, dict[str, float]],
+    soc_series: Sequence[tuple[datetime, str]],
+    connection_series: Sequence[tuple[datetime, str]],
+    *,
+    start: datetime,
+    end: datetime,
+    step: timedelta,
+    capacity_kwh: float,
+    charge_rate_kw: float,
+    plugged_states: Sequence[str] = (),
+    unplugged_states: Sequence[str] = (),
+    charging_states: Sequence[str] = (),
+    max_gap_minutes: float = 45.0,
+) -> int:
+    """Replay raw recorder history into hour buckets at the live poll cadence.
+
+    Ticks the clock every ``step`` exactly as the coordinator does live, holds
+    each entity's last known state forward to the tick, and folds every tick
+    interval through ``accumulate_interval``. That is what makes a replay agree
+    with live data: a plugged run lasting six hours lands as six hour buckets,
+    and an SoC ramp spread over three hours lands across those three buckets,
+    instead of one capped value in one bucket as a transition-by-transition
+    replay writes it.
+
+    ``soc_series`` / ``connection_series`` are ``(stamp, raw_state)`` rows in
+    ascending order, ``unknown`` and ``unavailable`` included: an entity that
+    stopped reporting has to break the run rather than be bridged by a held
+    value. Only hour buckets still empty for a field are written, so live data
+    is never counted twice. Returns the number of hour buckets touched.
+    """
+    if step <= timedelta(0) or end <= start:
+        return 0
+
+    soc_stamps = [stamp for stamp, _ in soc_series]
+    link_stamps = [stamp for stamp, _ in connection_series]
+
+    def held(
+        series: Sequence[tuple[datetime, str]], stamps: list[datetime], at: datetime
+    ) -> str | None:
+        """State in effect at ``at``: the last row stamped at or before it."""
+        index = bisect.bisect_right(stamps, at)
+        return None if index == 0 else series[index - 1][1]
+
+    scratch: dict[str, dict[str, float]] = {}
+    previous: tuple[datetime, float, bool] | None = None
+    tick = floor_hour(start)
+    while tick <= end:
+        try:
+            soc = float(held(soc_series, soc_stamps, tick))
+        except (TypeError, ValueError):
+            # Live would have raised UpdateFailed here: no interval is folded,
+            # and the run restarts at the next tick.
+            previous = None
+        else:
+            plugged, _ = classify_connection(
+                held(connection_series, link_stamps, tick),
+                plugged_states,
+                unplugged_states,
+                charging_states,
+            )
+            current = (tick, soc, plugged)
+            accumulate_interval(
+                scratch, previous, current, capacity_kwh, charge_rate_kw, max_gap_minutes
+            )
+            previous = current
+        tick += step
+
+    touched: set[str] = set()
+    for key, record in scratch.items():
+        for field, value in record.items():
+            if fill_missing(hours, key, field, value):
+                touched.add(key)
+    return len(touched)
 
 
 def _state_key(value: Any) -> str:

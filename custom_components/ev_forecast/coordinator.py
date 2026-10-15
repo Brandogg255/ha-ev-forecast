@@ -40,14 +40,12 @@ from .model import (
     accumulate_interval,
     classify_connection,
     daily_total,
-    drive_energy_kwh,
     drive_power_kw,
-    fill_missing,
     historical_forecast,
-    hour_key,
     merge_planned_trips,
     normalise_state_list,
     prune_samples,
+    replay_history,
     required_soc_pct,
     soc_power_kw,
     soc_slope_pct_per_hour,
@@ -249,8 +247,11 @@ class EVUsageCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def async_backfill(self, days: int) -> dict[str, int]:
         """Replay recorded SoC / plugged history into the hour store.
 
-        Only hour buckets that are still empty are written, so live data is
-        never double counted.
+        The replay ticks at ``SCAN_INTERVAL`` and folds each tick through the
+        same accumulator the live loop uses, so a six-hour plugged run becomes
+        six hour buckets and a three-hour SoC ramp is spread over the hours it
+        actually spanned. Only hour buckets still empty for a field are
+        written, so live data is never counted twice.
         """
         from homeassistant.components.recorder.history import get_significant_states
 
@@ -274,48 +275,36 @@ class EVUsageCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.error("Backfill for %s failed: %s", self.config.name, err)
             return {"error": 1, "hours": 0}
 
-        soc_series = self._as_numeric_series(result.get(self.config.soc_entity_id))
-        plugged_series = self._as_connection_series(
-            result.get(self.config.plugged_entity_id)
+        soc_series = self._raw_series(result.get(self.config.soc_entity_id))
+        connection_series = self._raw_series(result.get(self.config.plugged_entity_id))
+        config = self.config
+        hours = replay_history(
+            self.store.hours,
+            soc_series,
+            connection_series,
+            start=start,
+            end=end,
+            step=SCAN_INTERVAL,
+            capacity_kwh=config.capacity_kwh,
+            charge_rate_kw=config.charge_rate_kw,
+            plugged_states=config.plugged_states,
+            unplugged_states=config.unplugged_states,
+            charging_states=config.charging_states,
+            max_gap_minutes=MAX_ACCUMULATE_GAP.total_seconds() / 60.0,
         )
-
-        filled = 0
-        capacity = self.config.capacity_kwh
-        for (prev_ts, prev_soc), (ts, soc) in zip(soc_series, soc_series[1:]):
-            minutes = (ts - prev_ts).total_seconds() / 60.0
-            if minutes <= 0:
-                continue
-            energy = drive_energy_kwh(prev_soc, soc, minutes, capacity)
-            if fill_missing(self.store.hours, hour_key(ts), FIELD_DRIVE_KWH, energy):
-                filled += 1
-
-        plugged_hours = 0
-        for (prev_ts, prev_on), (ts, _) in zip(plugged_series, plugged_series[1:]):
-            if not prev_on:
-                continue
-            minutes = (ts - prev_ts).total_seconds() / 60.0
-            if minutes <= 0:
-                continue
-            key = hour_key(ts)
-            if fill_missing(self.store.hours, key, FIELD_PLUGED_HOURS, min(1.0, minutes / 60.0)):
-                bucket = self.store.hours[key]
-                bucket[FIELD_RATE_MAX] = max(
-                    bucket.get(FIELD_RATE_MAX, 0.0), self.config.charge_rate_kw
-                )
-                plugged_hours += 1
 
         await self.async_flush()
         _LOGGER.info(
-            "Backfilled %s: %s drive hours, %s plugged hours from %s days of history",
+            "Backfilled %s: %s hour buckets from %s days of history at %s cadence",
             self.config.name,
-            filled,
-            plugged_hours,
+            hours,
             days,
+            SCAN_INTERVAL,
         )
         # Push the new buckets through the payload immediately: HAEO reads
         # soc_required right after a backfill or a planned trip.
         await self.async_request_refresh()
-        return {"hours": filled, "plugged_hours": plugged_hours}
+        return {"hours": hours}
 
     def _state_pair(self, state: Any) -> tuple[Any, Any]:
         """Return ``(stamp, raw_state)`` for a recorder row or live state."""
@@ -326,40 +315,19 @@ class EVUsageCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raw = state.get("state")
         return stamp, raw
 
-    def _as_numeric_series(self, states: Any) -> list[tuple[datetime, float]]:
-        series: list[tuple[datetime, float]] = []
-        for state in states or []:
-            stamp, raw = self._state_pair(state)
-            if stamp is None or raw is None:
-                continue
-            try:
-                value = float(raw)
-            except (TypeError, ValueError):
-                continue
-            series.append((dt_util.as_local(stamp), value))
-        series.sort(key=lambda item: item[0])
-        return series
+    def _raw_series(self, states: Any) -> list[tuple[datetime, str]]:
+        """Recorder rows as ``(stamp, raw_state)``, ``unknown`` kept in place.
 
-    def _as_connection_series(self, states: Any) -> list[tuple[datetime, bool]]:
-        """Replay connection history through the classifier the live path uses.
-
-        A charger status sensor reports words, not ``on``/``off``, so backfill
-        has to map them with the same lists the user configured or the plugged
-        hours would disagree with the live ones.
+        The replay needs the holes: an entity that stopped reporting is what
+        tells it to stop folding intervals, exactly as the live path does. A
+        numeric-only or match-only series would bridge the outage instead.
         """
-        config = self.config
-        series: list[tuple[datetime, bool]] = []
+        series: list[tuple[datetime, str]] = []
         for state in states or []:
             stamp, raw = self._state_pair(state)
             if stamp is None or raw is None:
                 continue
-            plugged, _ = classify_connection(
-                raw,
-                config.plugged_states,
-                config.unplugged_states,
-                config.charging_states,
-            )
-            series.append((dt_util.as_local(stamp), plugged))
+            series.append((dt_util.as_local(stamp), str(raw)))
         series.sort(key=lambda item: item[0])
         return series
 
