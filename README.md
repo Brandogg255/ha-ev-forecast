@@ -45,9 +45,11 @@ replaces the hand-built helper stack (derivative helper, template sensors,
 
 ## Install
 
-HACS: add this repository as a custom integration repository, or copy
-`custom_components/ev_forecast` into `<config>/custom_components/ev_forecast`
-and restart Home Assistant.
+HACS: **HACS → Integrations → ⋮ → Custom repositories**, add
+`https://github.com/Brandogg255/ha-ev-forecast` with category **Integration**, then
+install *EV Forecast* (a branch install is fine; no release tag is required). Or copy
+`custom_components/ev_forecast` into `<config>/custom_components/ev_forecast` and
+restart Home Assistant.
 
 Then **Settings → Devices & Services → Add Integration → EV Forecast**.
 
