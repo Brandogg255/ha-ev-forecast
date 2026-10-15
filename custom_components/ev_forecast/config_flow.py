@@ -81,13 +81,19 @@ def _number(
     return selector.NumberSelector(selector.NumberSelectorConfig(**config))
 
 def _tags() -> selector.SelectSelector:
-    """Free-form tag list: the user types the states their charger reports."""
+    """Free-form list of state names the user types themselves.
+
+    ``custom_value`` (core 2024.10+) on a multiple dropdown accepts typed
+    values as well as listed ones, and with no preset options the field is a
+    pure text-in, chips-out list - which is what a charger's status vocabulary
+    needs, since it differs per brand.
+    """
     return selector.SelectSelector(
         selector.SelectSelectorConfig(
             options=[],
             multiple=True,
             custom_value=True,
-            mode=selector.SelectSelectorMode.TAGS,
+            mode=selector.SelectSelectorMode.DROPDOWN,
         )
     )
 
