@@ -298,6 +298,9 @@ class EVUsageCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             plugged_hours,
             days,
         )
+        # Push the new buckets through the payload immediately: HAEO reads
+        # soc_required right after a backfill or a planned trip.
+        await self.async_request_refresh()
         return {"hours": filled, "plugged_hours": plugged_hours}
 
     def _as_series(self, states: Any) -> list[tuple[datetime, Any]]:
@@ -330,12 +333,12 @@ class EVUsageCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ]
         self.store.trips.append(trip)
         await self.async_flush()
-        self.async_update_listeners()
+        await self.async_request_refresh()
 
     async def async_clear_trips(self) -> None:
         self.store.trips = []
         await self.async_flush()
-        self.async_update_listeners()
+        await self.async_request_refresh()
 
     # --- helpers -----------------------------------------------------------
 
