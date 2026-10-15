@@ -301,9 +301,11 @@ class EVUsageCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             days,
             SCAN_INTERVAL,
         )
-        # Push the new buckets through the payload immediately: HAEO reads
+        # Force the new buckets through the payload now. ``async_request_refresh``
+        # is debounced with a ten-second cooldown, so a service call that follows
+        # another refresh within that window would silently wait; HAEO reads
         # soc_required right after a backfill or a planned trip.
-        await self.async_request_refresh()
+        await self.async_refresh()
         return {"hours": hours}
 
     def _state_pair(self, state: Any) -> tuple[Any, Any]:
@@ -339,12 +341,12 @@ class EVUsageCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ]
         self.store.trips.append(trip)
         await self.async_flush()
-        await self.async_request_refresh()
+        await self.async_refresh()
 
     async def async_clear_trips(self) -> None:
         self.store.trips = []
         await self.async_flush()
-        await self.async_request_refresh()
+        await self.async_refresh()
 
     # --- helpers -----------------------------------------------------------
 

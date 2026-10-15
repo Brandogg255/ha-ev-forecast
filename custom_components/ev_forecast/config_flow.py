@@ -260,7 +260,7 @@ class EVForecastConfigFlow(ConfigFlow, domain=DOMAIN):
                 # failing here rather than after two more pages.
                 await self.async_set_unique_id(soc)
                 self._abort_if_unique_id_configured()
-                if not car[CONF_NAME]:
+                if not car.get(CONF_NAME):
                     state = self.hass.states.get(soc)
                     car[CONF_NAME] = _derived_name(
                         state.attributes.get("friendly_name"), soc

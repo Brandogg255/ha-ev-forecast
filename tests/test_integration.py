@@ -72,7 +72,13 @@ def auto_enable_custom_integrations(enable_custom_integrations):
 async def setup(hass: HomeAssistant, soc: str = "40.0", plugged: str = "on") -> MockConfigEntry:
     hass.states.async_set(CONFIG[CONF_SOC_ENTITY], soc)
     hass.states.async_set(CONFIG[CONF_PLUGGED_ENTITY], plugged)
-    entry = MockConfigEntry(domain=DOMAIN, title=CONFIG[CONF_NAME], data=CONFIG, version=1)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title=CONFIG[CONF_NAME],
+        data=CONFIG,
+        version=1,
+        unique_id=CONFIG[CONF_SOC_ENTITY],
+    )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
@@ -156,7 +162,8 @@ async def test_backfill_service_replays_a_long_run_at_the_live_cadence(
     def fake_history(hass, start_time, end_time, entity_ids, *args, **kwargs):
         # A wallbox that reported ``on`` for six hours, and an SoC sensor that
         # spoke every five minutes - what the recorder actually holds.
-        run_start = end_time - timedelta(hours=6)
+        grid = end_time - timedelta(hours=6)
+        run_start = grid.replace(minute=0, second=0, microsecond=0)
         steps = range(0, 73)
         return {
             CONFIG[CONF_SOC_ENTITY]: [
@@ -167,7 +174,10 @@ async def test_backfill_service_replays_a_long_run_at_the_live_cadence(
                 for step in steps
             ],
             CONFIG[CONF_PLUGGED_ENTITY]: [
-                SimpleNamespace(last_changed=run_start, state="on")
+                SimpleNamespace(last_changed=run_start, state="on"),
+                SimpleNamespace(
+                    last_changed=run_start + timedelta(hours=6), state="off"
+                ),
             ],
         }
 
@@ -210,7 +220,7 @@ async def test_backfill_service_replays_a_long_run_at_the_live_cadence(
         if bucket.get(FIELD_PLUGED_HOURS, 0) > 0.5
     }
     assert plugged_slots == bucket_slots
-    assert len(bucket_slots) in (6, 7)
+    assert len(bucket_slots) == 6
 
 
 async def test_config_flow_answers_a_bad_charger_page_with_form_errors(
@@ -267,6 +277,7 @@ async def test_config_flow_walks_three_pages_and_types_the_form_output(
 ) -> None:
     """Strings from the UI become numbers, and a blank name still sizes entities."""
     hass.states.async_set(CONFIG[CONF_SOC_ENTITY], "40.0", {"friendly_name": "Aion UT"})
+    hass.states.async_set(CONFIG[CONF_PLUGGED_ENTITY], "on")
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": "user"},
@@ -284,7 +295,9 @@ async def test_config_flow_walks_three_pages_and_types_the_form_output(
         result["flow_id"], user_input={CONF_HORIZON: "72"}
     )
     assert result["type"] == FlowResultType.CREATE_ENTRY
-    entry = hass.config_entries.async_get_entry(result["entry_id"])
+    # ``async_finish_flow`` attaches the stored entry as ``result``; there is no
+    # ``entry_id`` key on a config-flow create result.
+    entry = result["result"]
     assert entry.title == "Aion UT"
     assert entry.unique_id == CONFIG[CONF_SOC_ENTITY]
     assert entry.data[CONF_NAME] == "Aion UT"
@@ -379,8 +392,10 @@ async def test_options_flow_revalidates_the_charger_page(hass: HomeAssistant) ->
     assert result["type"] == FlowResultType.CREATE_ENTRY
     await hass.async_block_till_done()
     assert entry.options[CONF_PLUGGED_ENTITY] == "sensor.de_ev_charger_status"
+    # ``_normalise`` folds ``_`` and ``-`` to spaces, which is what lets a user
+    # typing ``plugged in`` match a charger that reports ``plugged_in``.
     assert entry.options[CONF_PLUGGED_STATES] == [
-        "plugged_in",
+        "plugged in",
         "waiting",
         "charged",
         "paused",

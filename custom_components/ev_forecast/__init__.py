@@ -78,7 +78,7 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> boo
         return await hass.config_entries.async_reload(entry.entry_id)
     data["config"] = new_config
     data["coordinator"].config = new_config
-    await data["coordinator"].async_request_refresh()
+    await data["coordinator"].async_refresh()
     return True
 
 

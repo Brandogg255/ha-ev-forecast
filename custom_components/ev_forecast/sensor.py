@@ -91,15 +91,15 @@ DESCRIPTIONS: tuple[EVSensorDescription, ...] = (
     EVSensorDescription(
         key="plugged_flag",
         value_key="plugged_flag",
+        # A 0/1 flag is not a measurement: a state class makes Home Assistant
+        # coerce the value to float, so the state would read "1.0".
         name="Plugged Flag",
-        state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:ev-station",
     ),
     EVSensorDescription(
         key="charging_flag",
         value_key="charging_flag",
         name="Charging Flag",
-        state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:battery-charging",
     ),
     EVSensorDescription(
@@ -144,7 +144,6 @@ DESCRIPTIONS: tuple[EVSensorDescription, ...] = (
         value_key="plugged_flag",
         forecast_key="plugged_forecast",
         name="Plugged Flag Forecast",
-        state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:ev-plug-ccs2",
     ),
 )
@@ -188,7 +187,7 @@ class EVModelSensor(CoordinatorEntity[EVUsageCoordinator], SensorEntity):
         return self.coordinator.last_update_success and bool(self.coordinator.data)
 
     @property
-    def native_value(self) -> float | None:
+    def native_value(self) -> float | int | None:
         data = self.coordinator.data or {}
         forecast_key = self.entity_description.forecast_key
         if forecast_key:
@@ -196,7 +195,11 @@ class EVModelSensor(CoordinatorEntity[EVUsageCoordinator], SensorEntity):
             if series:
                 return float(series[0][1])
         value = data.get(self.entity_description.value_key)
-        return None if value is None else float(value)
+        if value is None:
+            return None
+        # The flags are ints in the payload; coercing them to float makes the
+        # state read "1.0" instead of "1".
+        return value if isinstance(value, int) else float(value)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

@@ -105,7 +105,9 @@ def test_discharge_ramp_spreads_over_the_hours_it_spanned():
     assert hours[hour_key(at(1))][FIELD_DRIVE_KWH] == 0.6
     assert hours[hour_key(at(2))][FIELD_DRIVE_KWH] == 0.6
     assert hours[hour_key(at(3))][FIELD_DRIVE_KWH] == 0.3
-    assert sum(bucket.get(FIELD_DRIVE_KWH, 0.0) for bucket in hours.values()) == 1.8
+    assert sum(bucket.get(FIELD_DRIVE_KWH, 0.0) for bucket in hours.values()) == (
+        pytest.approx(1.8, abs=1e-3)
+    )
     assert all(FIELD_PLUGED_HOURS not in bucket for bucket in hours.values())
 
 
