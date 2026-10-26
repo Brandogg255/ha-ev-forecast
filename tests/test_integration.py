@@ -7,6 +7,7 @@ anywhere else so the pure-model suite still runs with plain pytest.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
 
@@ -32,6 +33,7 @@ from custom_components.ev_forecast.const import (  # noqa: E402
     CONF_HORIZON,
     CONF_MAX_SOC,
     CONF_NAME,
+    CONF_ODOMETER_ENTITY,
     CONF_PLUGGED_ENTITY,
     CONF_PLUGGED_STATES,
     CONF_SOC_ENTITY,
@@ -69,13 +71,22 @@ def auto_enable_custom_integrations(enable_custom_integrations):
     yield
 
 
-async def setup(hass: HomeAssistant, soc: str = "40.0", plugged: str = "on") -> MockConfigEntry:
+async def setup(
+    hass: HomeAssistant,
+    soc: str = "40.0",
+    plugged: str = "on",
+    odometer: str | None = None,
+) -> MockConfigEntry:
     hass.states.async_set(CONFIG[CONF_SOC_ENTITY], soc)
     hass.states.async_set(CONFIG[CONF_PLUGGED_ENTITY], plugged)
+    data = dict(CONFIG)
+    if odometer:
+        data[CONF_ODOMETER_ENTITY] = odometer
+        hass.states.async_set(odometer, "12000.0")
     entry = MockConfigEntry(
         domain=DOMAIN,
         title=CONFIG[CONF_NAME],
-        data=CONFIG,
+        data=data,
         version=1,
         unique_id=CONFIG[CONF_SOC_ENTITY],
     )
@@ -150,6 +161,53 @@ async def test_soc_drop_accumulates_drive_energy(hass: HomeAssistant) -> None:
     assert hass.states.get("sensor.gac_aion_ut_drive_energy_daily").state == "0.3"
     assert float(hass.states.get("sensor.gac_aion_ut_drive_power").state) > 0.0
     assert float(hass.states.get("sensor.gac_aion_ut_soc_power").state) < 0.0
+
+
+async def test_lifetime_average_is_seeded_from_the_options(hass: HomeAssistant) -> None:
+    """The entered average is the entity's first state, totals beside it."""
+    await setup(hass, plugged="off", odometer="sensor.aion_ut_odometer")
+    average = hass.states.get("sensor.gac_aion_ut_avg_kwh_100km")
+    assert average.state == "15.0"
+    assert average.attributes["tracked_km"] == 400.0  # one pack at 15 kWh/100km
+    assert average.attributes["tracked_kwh"] == 60.0
+
+
+async def test_lifetime_average_needs_an_odometer(hass: HomeAssistant) -> None:
+    """No distance to divide by: unavailable, never a made-up zero."""
+    await setup(hass, plugged="off")
+    assert hass.states.get("sensor.gac_aion_ut_avg_kwh_100km").state == "unavailable"
+
+
+async def test_a_drive_sample_moves_the_lifetime_average(hass: HomeAssistant) -> None:
+    """SoC down over real distance: 0.36 kWh across 4 km folds into the mean."""
+    entry = await setup(hass, plugged="off", odometer="sensor.aion_ut_odometer")
+    coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+
+    hass.states.async_set("sensor.aion_ut_odometer", "12004.0")
+    hass.states.async_set(CONFIG[CONF_SOC_ENTITY], "39.4")
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    average = hass.states.get("sensor.gac_aion_ut_avg_kwh_100km")
+    assert average.state == "14.94"
+    assert average.attributes["tracked_km"] == 404.0
+
+
+
+async def test_a_corrected_seed_reaches_the_store(hass: HomeAssistant) -> None:
+    """Editing the seeded average must persist, not live only in memory."""
+    entry = await setup(hass, plugged="off", odometer="sensor.aion_ut_odometer")
+    data = hass.data[DOMAIN][entry.entry_id]
+
+    data["coordinator"].config = replace(
+        data["config"], avg_kwh_100km_seed=12.0
+    )
+    await data["coordinator"].async_refresh()
+    await hass.async_block_till_done()
+
+    assert hass.states.get("sensor.gac_aion_ut_avg_kwh_100km").state == "12.0"
+    assert data["store"].efficiency["seed_kwh_100km"] == 12.0
+    assert data["store"].efficiency["avg_kwh_100km"] == 12.0
 
 
 async def test_backfill_service_replays_a_long_run_at_the_live_cadence(

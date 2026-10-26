@@ -64,7 +64,9 @@ when you retune the model.
 | --- | --- | --- |
 | EV name | – | Drives entity ids: `GAC Aion UT` → `sensor.gac_aion_ut_charge_rate_forecast`. Left blank it takes the state-of-charge sensor's name |
 | State of charge sensor | – | Sensor whose state is the pack percentage (0-100). One model per sensor, and a duplicate is rejected on this page |
+| Odometer sensor | – | Optional. Distance sensor that lets a state-of-charge drop be turned into kWh/100km; left blank the average consumption entity stays `unavailable` |
 | Usable pack capacity | 60 kWh | Converts percentage into kW and kWh |
+| Average consumption | 15 kWh/100km | Seeds the lifetime average. Worth one full pack of driving, so measured trips argue it down within a few weeks |
 | Charging efficiency | 85 % | Wall-to-pack efficiency |
 | Charge rate | 3.3 kW | AC power drawn while plugged; used where no history exists |
 | Comfort buffer | 5 kWh | Extra energy kept above the trip requirement |
@@ -145,6 +147,7 @@ For an EV named *GAC Aion UT*:
 | `sensor.gac_aion_ut_charge_rate_forecast` | kW | Hourly forecast, `forecast` attribute |
 | `sensor.gac_aion_ut_drive_power_forecast` | kW | Hourly forecast, `forecast` + `planned_trips` |
 | `sensor.gac_aion_ut_plugged_flag_forecast` | – | Hourly forecast, `forecast` attribute |
+| `sensor.gac_aion_ut_avg_kwh_100km` | kWh/100km | Lifetime average consumption, seeded then re-weighted by measured distance; `tracked_km` / `tracked_kwh` attributes |
 
 The three forecast entities carry the HAEO-consumable attribute:
 
@@ -155,6 +158,35 @@ forecast:
   - time: "2026-10-15T12:00:00+11:00"
     value: 0.0
 ```
+
+## Average consumption (kWh/100km)
+
+`sensor.<ev>_avg_kwh_100km` is a lifetime figure, not a rolling window. It needs
+the odometer from page 1: with no distance to divide by, the entity stays
+`unavailable` instead of inventing a number.
+
+- **Seeding.** The average you enter on page 1 is the starting value, and it
+  carries the only distance a bare average implies - one full pack of driving,
+  `capacity_kwh / (seed/100)` km. A 60 kWh pack seeded at 15 kWh/100km starts
+  with a 400 km prior behind 60 kWh.
+- **Measuring.** Each poll compares the previous SoC/odometer pair with the
+  current one. A sample counts only when the wheels turned at least 0.2 km,
+  state of charge went *down*, and the pair is less than 45 minutes apart.
+  Charging (SoC rising), parked vampire drain (odometer standing still), a
+  rewound or replaced odometer and offline gaps are rejected, not averaged in.
+- **Weighting.** The published value is `tracked_kwh / tracked_km × 100`, so a
+  4 km trip at 9 kWh/100km moves that 400 km prior by 0.06: a short trip cannot
+  rewrite a lifetime, and a year of driving genuinely does.
+- **Persistence.** The running mean and its km/kWh totals live in the
+  integration store, so a restart continues from where it left off. Changing the
+  seeded average under **Configure** re-baselines the figure from the new value;
+  leaving it untouched does not.
+- **Not backfilled.** `ev_forecast.backfill_history` replays state-of-charge and
+  plugged history into the hour buckets; it does not replay the odometer, so the
+  lifetime figure starts accumulating when the entry is set up.
+- **Units.** The odometer unit only has to stay consistent: a mileage odometer
+  yields the same arithmetic per 100 miles while the label still reads
+  `kWh/100km`.
 
 ## Wiring into HAEO
 

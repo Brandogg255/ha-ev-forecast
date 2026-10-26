@@ -11,6 +11,7 @@ negative = energy out of the battery (driving, vampire drain).
 from __future__ import annotations
 
 import bisect
+import math
 
 from collections.abc import Sequence
 from typing import Any
@@ -301,6 +302,157 @@ def accumulate_interval(
         )
         bucket[FIELD_RATE_MAX] = max(bucket.get(FIELD_RATE_MAX, 0.0), charge_rate_kw)
     return energy
+
+
+# --- lifetime consumption (kWh/100km) ----------------------------------------
+
+FIELD_AVG_KWH_100KM = "avg_kwh_100km"  # running lifetime mean
+FIELD_TRACKED_KM = "tracked_km"  # km behind that mean, seeded prior included
+FIELD_TRACKED_KWH = "tracked_kwh"  # kWh behind that mean, seeded prior included
+FIELD_SEED_KWH_100KM = "seed_kwh_100km"  # the average the user seeded with
+
+
+@dataclass(frozen=True)
+class EfficiencyState:
+    """The lifetime consumption figure and the totals behind it.
+
+    ``tracked_km``/``tracked_kwh`` include the seeded prior, so the published
+    average is exactly ``tracked_kwh / tracked_km * 100`` and every measured
+    sample moves it by precisely its own distance - no hidden smoothing factor
+    to argue about.
+    """
+
+    avg_kwh_100km: float
+    tracked_km: float
+    tracked_kwh: float
+    seed_kwh_100km: float
+
+    def as_dict(self) -> dict[str, float]:
+        return {
+            FIELD_AVG_KWH_100KM: self.avg_kwh_100km,
+            FIELD_TRACKED_KM: self.tracked_km,
+            FIELD_TRACKED_KWH: self.tracked_kwh,
+            FIELD_SEED_KWH_100KM: self.seed_kwh_100km,
+        }
+
+
+def _positive(value: Any) -> bool:
+    """True when ``value`` is a usable positive number."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(number) and number > 0
+
+
+def seed_prior_km(seed_kwh_100km: float, capacity_kwh: float) -> float:
+    """Distance the seeded average says one full pack covers."""
+    if not _positive(seed_kwh_100km) or not _positive(capacity_kwh):
+        return 0.0
+    return float(capacity_kwh) / (float(seed_kwh_100km) / 100.0)
+
+
+def seed_efficiency(seed_kwh_100km: float, capacity_kwh: float) -> EfficiencyState:
+    """Start the lifetime figure from an average the user typed in.
+
+    A bare average carries no distance, so the only prior it implies is one
+    pack's worth of energy: ``capacity_kwh`` kWh spread over
+    ``capacity_kwh / (seed/100)`` km. That makes the seed weigh about one full
+    charge of driving - enough to be useful on day one, small enough that a
+    wrong guess is argued down by the measurements instead of dominating them.
+    """
+    if not _positive(seed_kwh_100km) or not _positive(capacity_kwh):
+        return EfficiencyState(0.0, 0.0, 0.0, 0.0)
+    seed = float(seed_kwh_100km)
+    prior_km = seed_prior_km(seed, capacity_kwh)
+    prior_kwh = seed * prior_km / 100.0
+    return EfficiencyState(round(seed, 3), round(prior_km, 3), round(prior_kwh, 3), round(seed, 3))
+
+
+def _num(value: Any) -> bool:
+    """True when ``value`` parses as a finite number (zero included)."""
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def efficiency_from_store(
+    record: dict[str, Any], seed_kwh_100km: float, capacity_kwh: float
+) -> EfficiencyState:
+    """Stored lifetime figure, or the seed when nothing usable is stored.
+
+    A stored record is kept only while its seed still matches the configured
+    one: editing the seeded average is an explicit correction, so it
+    re-baselines the lifetime figure rather than mixing a new prior into the
+    old one. A reload with the seed untouched continues from the stored value.
+    """
+    configured = float(seed_kwh_100km) if _num(seed_kwh_100km) else 0.0
+    try:
+        avg = float(record[FIELD_AVG_KWH_100KM])
+        km = float(record[FIELD_TRACKED_KM])
+        kwh = float(record[FIELD_TRACKED_KWH])
+        stored_seed = float(record[FIELD_SEED_KWH_100KM])
+    except (KeyError, TypeError, ValueError):
+        return seed_efficiency(configured, capacity_kwh)
+    if not all(math.isfinite(value) and value >= 0 for value in (avg, km, kwh, stored_seed)):
+        return seed_efficiency(configured, capacity_kwh)
+    if round(stored_seed, 3) != round(configured, 3):
+        return seed_efficiency(configured, capacity_kwh)
+    return EfficiencyState(avg, km, kwh, stored_seed)
+
+
+def efficiency_sample_kwh_100km(
+    previous: tuple[datetime, float, float] | None,
+    current: tuple[datetime, float, float],
+    capacity_kwh: float,
+    *,
+    max_gap_minutes: float = 45.0,
+    min_distance_km: float = 0.2,
+) -> float | None:
+    """kWh/100km for one interval, or ``None`` when it says nothing.
+
+    ``previous``/``current`` are ``(stamp, soc_pct, odometer_km)``. Only a real
+    discharge over real distance counts: charging raises SoC, and a parked car
+    loses SoC without moving, so both are rejected instead of being averaged in
+    as consumption. A rewound or reset odometer gives a negative delta and is
+    rejected by the same distance test.
+    """
+    if previous is None:
+        return None
+    prev_ts, prev_soc, prev_km = previous
+    stamp, soc, km = current
+    elapsed_minutes = (stamp - prev_ts).total_seconds() / 60.0
+    if elapsed_minutes <= 0 or elapsed_minutes > max_gap_minutes:
+        return None
+    if not all(math.isfinite(value) for value in (prev_soc, soc, prev_km, km, capacity_kwh)):
+        return None
+    distance = km - prev_km
+    if distance < min_distance_km:
+        return None
+    energy = (prev_soc - soc) * capacity_kwh / 100.0
+    if energy <= 0:
+        return None
+    return round(energy * 100.0 / distance, 4)
+
+
+def add_efficiency_sample(
+    state: EfficiencyState, sample_kwh_100km: float | None, sample_km: float | None
+) -> EfficiencyState:
+    """Fold one measured sample into the lifetime figure, weighted by distance."""
+    if not _num(sample_kwh_100km) or not _num(sample_km):
+        return state
+    sample_kwh_100km = float(sample_kwh_100km)  # type: ignore[arg-type]
+    sample_km = float(sample_km)  # type: ignore[arg-type]
+    if sample_kwh_100km <= 0 or sample_km <= 0:
+        return state
+    km = state.tracked_km + sample_km
+    kwh = state.tracked_kwh + sample_kwh_100km * sample_km / 100.0
+    if km <= 0:
+        return state
+    return EfficiencyState(
+        round(kwh * 100.0 / km, 3), round(km, 3), round(kwh, 3), state.seed_kwh_100km
+    )
 
 
 def fill_missing(

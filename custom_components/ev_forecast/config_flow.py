@@ -24,6 +24,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv, selector
 
 from .const import (
+    CONF_AVG_KWH_100KM,
     CONF_BUFFER,
     CONF_CAPACITY,
     CONF_CHARGE_RATE,
@@ -33,11 +34,13 @@ from .const import (
     CONF_HORIZON,
     CONF_MAX_SOC,
     CONF_NAME,
+    CONF_ODOMETER_ENTITY,
     CONF_PLUGGED_ENTITY,
     CONF_PLUGGED_STATES,
     CONF_SOC_ENTITY,
     CONF_SOC_WINDOW,
     CONF_UNPLUGGED_STATES,
+    DEFAULT_AVG_KWH_100KM,
     DEFAULT_BUFFER,
     DEFAULT_CAPACITY,
     DEFAULT_CHARGE_RATE,
@@ -47,10 +50,13 @@ from .const import (
     DEFAULT_MAX_SOC,
     DEFAULT_SOC_WINDOW,
     DOMAIN,
+    MAX_AVG_KWH_100KM,
     MAX_HISTORY_DAYS,
     MAX_SOC_WINDOW,
+    MIN_AVG_KWH_100KM,
     MIN_HISTORY_DAYS,
     MIN_SOC_WINDOW,
+    UNIT_KWH_100KM,
 )
 from .model import normalise_state_list
 
@@ -66,6 +72,7 @@ _FLOAT_KEYS: dict[str, float] = {
     CONF_CHARGE_RATE: DEFAULT_CHARGE_RATE,
     CONF_BUFFER: DEFAULT_BUFFER,
     CONF_MAX_SOC: DEFAULT_MAX_SOC,
+    CONF_AVG_KWH_100KM: DEFAULT_AVG_KWH_100KM,
 }
 _INT_KEYS: dict[str, int] = {
     CONF_HISTORY_DAYS: DEFAULT_HISTORY_DAYS,
@@ -79,6 +86,7 @@ _DEFAULTS: dict[str, Any] = {
     CONF_NAME: "",
     **_FLOAT_KEYS,
     **_INT_KEYS,
+    CONF_ODOMETER_ENTITY: "",
     CONF_PLUGGED_STATES: [],
     CONF_UNPLUGGED_STATES: [],
     CONF_CHARGING_STATES: [],
@@ -133,6 +141,19 @@ def _picker(defaults: dict[str, Any], key: str, *, strict: bool) -> vol.Optional
     return vol.Optional(key)
 
 
+def _optional_picker(defaults: dict[str, Any], key: str, *, strict: bool) -> vol.Optional:
+    """Optional entity picker, pre-filled only when something is already set.
+
+    A stored empty string must not become the schema default: the selector would
+    have to accept "" as an entity id, and leaving the field alone would fail
+    validation instead of meaning "not tracked".
+    """
+    stored = defaults.get(key) or ""
+    if strict and stored:
+        return vol.Optional(key, default=str(stored))
+    return vol.Optional(key)
+
+
 def _car_schema(defaults: dict[str, Any], *, strict: bool) -> vol.Schema:
     """Page one: which EV, and the pack parameters that size its charging."""
     return vol.Schema(
@@ -141,8 +162,16 @@ def _car_schema(defaults: dict[str, Any], *, strict: bool) -> vol.Schema:
             _picker(defaults, CONF_SOC_ENTITY, strict=strict): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain="sensor")
             ),
+            _optional_picker(
+                defaults, CONF_ODOMETER_ENTITY, strict=strict
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor")
+            ),
             _prefilled(defaults, CONF_CAPACITY, DEFAULT_CAPACITY): _number(
                 1, 500, 0.1, "kWh"
+            ),
+            _prefilled(defaults, CONF_AVG_KWH_100KM, DEFAULT_AVG_KWH_100KM): _number(
+                MIN_AVG_KWH_100KM, MAX_AVG_KWH_100KM, 0.1, UNIT_KWH_100KM
             ),
             _prefilled(defaults, CONF_EFFICIENCY, DEFAULT_EFFICIENCY): _number(
                 50, 100, 1, "%", selector.NumberSelectorMode.SLIDER
@@ -203,6 +232,9 @@ def _normalise(values: dict[str, Any]) -> dict[str, Any]:
     data = dict(values)
     if CONF_NAME in data:
         data[CONF_NAME] = str(data[CONF_NAME] or "").strip()
+    if CONF_ODOMETER_ENTITY in data:
+        # Optional: an empty picker means the lifetime average is not tracked.
+        data[CONF_ODOMETER_ENTITY] = str(data[CONF_ODOMETER_ENTITY] or "")
     for key, fallback in _FLOAT_KEYS.items():
         if key in data:
             data[key] = float(fallback if data[key] in (None, "") else data[key])
@@ -219,6 +251,17 @@ def _derived_name(friendly_name: Any, entity_id: str) -> str:
     """Fall back to the state-of-charge sensor's name when none was given."""
     label = str(friendly_name or entity_id.split(".", 1)[-1]).replace("_", " ").strip()
     return label or entity_id
+
+
+def _car_errors(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, str]:
+    """Errors for the car page: every source entity it names must exist."""
+    errors: dict[str, str] = {}
+    odometer = str(data.get(CONF_ODOMETER_ENTITY) or "")
+    if odometer and hass.states.get(odometer) is None:
+        # A typo here would leave the lifetime average frozen at its seed with
+        # nothing to explain why.
+        errors[CONF_ODOMETER_ENTITY] = "entity_not_found"
+    return errors
 
 
 def _charger_errors(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, str]:
@@ -255,6 +298,7 @@ class EVForecastConfigFlow(ConfigFlow, domain=DOMAIN):
             soc = str(car.get(CONF_SOC_ENTITY) or "")
             if not soc or self.hass.states.get(soc) is None:
                 errors[CONF_SOC_ENTITY] = "entity_not_found"
+            errors.update(_car_errors(self.hass, car))
             if not errors:
                 # One usage model per state-of-charge sensor, and it is worth
                 # failing here rather than after two more pages.
@@ -328,11 +372,19 @@ class OptionsFlowHandler(OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Page one: the car."""
+        errors: dict[str, str] = {}
         if user_input is not None:
-            self._pages.update(_normalise(user_input))
-            return await self.async_step_charger()
+            car = _normalise(user_input)
+            errors = _car_errors(self.hass, car)
+            if not errors:
+                self._pages.update(car)
+                return await self.async_step_charger()
         return self.async_show_form(
-            step_id="init", data_schema=_car_schema(self._stored, strict=True)
+            step_id="init",
+            data_schema=_car_schema(
+                {**self._stored, **(user_input or {})}, strict=True
+            ),
+            errors=errors,
         )
 
     async def async_step_charger(

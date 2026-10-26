@@ -29,7 +29,15 @@ from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import ATTR_FORECAST, ATTR_HISTORY_HOURS, ATTR_PLANNED_TRIPS, DOMAIN
+from .const import (
+    ATTR_FORECAST,
+    ATTR_HISTORY_HOURS,
+    ATTR_PLANNED_TRIPS,
+    ATTR_TRACKED_KM,
+    ATTR_TRACKED_KWH,
+    DOMAIN,
+    UNIT_KWH_100KM,
+)
 from .coordinator import EVUsageCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -41,6 +49,11 @@ class EVSensorDescription(SensorEntityDescription):
 
     value_key: str = ""
     forecast_key: str | None = None
+    # Payload keys mirrored into state attributes as (payload_key, attribute).
+    attribute_keys: tuple[tuple[str, str], ...] = ()
+    # A figure with no zero to fall back on: the lifetime average has to read
+    # unavailable rather than unknown when the model has nothing to report.
+    requires_value: bool = False
 
 
 DESCRIPTIONS: tuple[EVSensorDescription, ...] = (
@@ -146,6 +159,20 @@ DESCRIPTIONS: tuple[EVSensorDescription, ...] = (
         name="Plugged Flag Forecast",
         icon="mdi:ev-plug-ccs2",
     ),
+    EVSensorDescription(
+        key="avg_kwh_100km",
+        value_key="avg_kwh_100km",
+        name="Avg kWh 100km",
+        native_unit_of_measurement=UNIT_KWH_100KM,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        icon="mdi:speedometer-medium",
+        requires_value=True,
+        attribute_keys=(
+            ("efficiency_tracked_km", ATTR_TRACKED_KM),
+            ("efficiency_tracked_kwh", ATTR_TRACKED_KWH),
+        ),
+    ),
 )
 
 
@@ -184,7 +211,13 @@ class EVModelSensor(CoordinatorEntity[EVUsageCoordinator], SensorEntity):
 
     @property
     def available(self) -> bool:
-        return self.coordinator.last_update_success and bool(self.coordinator.data)
+        if not (self.coordinator.last_update_success and self.coordinator.data):
+            return False
+        if self.entity_description.requires_value:
+            return (
+                self.coordinator.data.get(self.entity_description.value_key) is not None
+            )
+        return True
 
     @property
     def native_value(self) -> float | int | None:
@@ -205,6 +238,8 @@ class EVModelSensor(CoordinatorEntity[EVUsageCoordinator], SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         data = self.coordinator.data or {}
         attributes: dict[str, Any] = {ATTR_HISTORY_HOURS: data.get("history_hours", 0)}
+        for payload_key, attribute in self.entity_description.attribute_keys:
+            attributes[attribute] = data.get(payload_key)
         forecast_key = self.entity_description.forecast_key
         if forecast_key:
             series = data.get(forecast_key) or []

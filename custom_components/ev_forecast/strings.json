@@ -7,7 +7,9 @@
         "data": {
           "ev_name": "EV name",
           "soc_entity_id": "State of charge sensor",
+          "odometer_entity_id": "Odometer sensor",
           "capacity_kwh": "Usable pack capacity",
+          "avg_kwh_100km": "Average consumption",
           "efficiency_pct": "Charging efficiency",
           "charge_rate_kw": "Charge rate",
           "buffer_kwh": "Comfort buffer",
@@ -16,7 +18,9 @@
         "data_description": {
           "ev_name": "Used for entity ids, for example \"GAC Aion UT\" gives sensor.gac_aion_ut_charge_rate_forecast.",
           "soc_entity_id": "A sensor whose state is the pack percentage (0-100). Its slope drives the drive-power signal.",
+          "odometer_entity_id": "Optional. A sensor whose state is the distance the car has driven; its unit only has to stay consistent, km or miles. Without it the average consumption figure has no distance to work against and reads unavailable.",
           "capacity_kwh": "Usable energy in the pack; converts percentage into kW and kWh.",
+          "avg_kwh_100km": "Seeds the lifetime average, in kWh per 100 km. The seed is worth one full pack of driving, so measured trips argue it down within a few weeks. Leave it alone if unsure.",
           "efficiency_pct": "Wall-to-pack efficiency used when converting charge rate into stored energy.",
           "charge_rate_kw": "AC power the EV draws while plugged in; used when no measured history exists.",
           "buffer_kwh": "Extra energy kept above the trip requirement.",
@@ -59,7 +63,9 @@
         "data": {
           "ev_name": "EV name",
           "soc_entity_id": "State of charge sensor",
+          "odometer_entity_id": "Odometer sensor",
           "capacity_kwh": "Usable pack capacity",
+          "avg_kwh_100km": "Average consumption",
           "efficiency_pct": "Charging efficiency",
           "charge_rate_kw": "Charge rate",
           "buffer_kwh": "Comfort buffer",
@@ -68,7 +74,9 @@
         "data_description": {
           "ev_name": "Renaming changes the entity ids on the next reload.",
           "soc_entity_id": "Changing this reloads the entry and moves the model to the new sensor.",
+          "odometer_entity_id": "Optional. Changing it moves the tracking to the new sensor without discarding what has already been measured.",
           "capacity_kwh": "Usable energy in the pack; converts percentage into kW and kWh.",
+          "avg_kwh_100km": "Seeds the lifetime average, in kWh per 100 km. Changing this value re-baselines the figure: the stored average is rebuilt from the new seed plus one pack of prior distance.",
           "efficiency_pct": "Wall-to-pack efficiency used when converting charge rate into stored energy.",
           "charge_rate_kw": "AC power the EV draws while plugged in; used when no measured history exists.",
           "buffer_kwh": "Extra energy kept above the trip requirement.",

@@ -9,6 +9,9 @@ signals an optimizer needs to schedule charging:
 - **Plugged behaviour** as an hourly forecast.
 - **Required state of charge** sized from the trips ahead, the charge rate and
   the charging window, capped so an unreachable target never pins the charger.
+- **Average consumption (kWh/100km)** - a lifetime figure seeded from an average
+  you enter, then measured from state-of-charge drops against the odometer and
+  carried across restarts.
 
 Owns its own hour buckets, so `ev_forecast.backfill_history` seeds the
 forecasts from recorder history on day one instead of waiting a week for

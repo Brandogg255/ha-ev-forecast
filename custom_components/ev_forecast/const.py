@@ -26,6 +26,8 @@ CONF_MAX_SOC: Final = "max_soc_pct"
 CONF_HISTORY_DAYS: Final = "history_days"
 CONF_SOC_WINDOW: Final = "soc_window_minutes"
 CONF_HORIZON: Final = "horizon_hours"
+CONF_ODOMETER_ENTITY: Final = "odometer_entity_id"
+CONF_AVG_KWH_100KM: Final = "avg_kwh_100km"
 
 DEFAULT_CAPACITY: Final = 60.0
 DEFAULT_EFFICIENCY: Final = 85.0
@@ -41,6 +43,12 @@ MAX_SOC_WINDOW: Final = 60
 DEFAULT_HORIZON: Final = 72
 DEFAULT_FORECAST_HOURS: Final = 168
 RETENTION_MULTIPLIER: Final = 3
+DEFAULT_AVG_KWH_100KM: Final = 15.0
+MIN_AVG_KWH_100KM: Final = 1.0
+MAX_AVG_KWH_100KM: Final = 100.0
+# An interval shorter than this is noise: a whole percent of SoC over a few
+# metres of travel cannot say anything about consumption.
+MIN_EFFICIENCY_SAMPLE_KM: Final = 0.2
 
 SCAN_INTERVAL: Final = timedelta(minutes=5)
 STORAGE_VERSION: Final = 1
@@ -52,3 +60,7 @@ SERVICE_CLEAR_TRIPS: Final = "clear_trips"
 ATTR_FORECAST: Final = "forecast"
 ATTR_PLANNED_TRIPS: Final = "planned_trips"
 ATTR_HISTORY_HOURS: Final = "history_hours"
+ATTR_TRACKED_KM: Final = "tracked_km"
+ATTR_TRACKED_KWH: Final = "tracked_kwh"
+
+UNIT_KWH_100KM: Final = "kWh/100km"

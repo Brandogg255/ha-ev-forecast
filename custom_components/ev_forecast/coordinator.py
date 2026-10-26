@@ -14,6 +14,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    CONF_AVG_KWH_100KM,
     CONF_BUFFER,
     CONF_CAPACITY,
     CONF_CHARGE_RATE,
@@ -23,13 +24,16 @@ from .const import (
     CONF_HORIZON,
     CONF_MAX_SOC,
     CONF_NAME,
+    CONF_ODOMETER_ENTITY,
     CONF_PLUGGED_ENTITY,
     CONF_PLUGGED_STATES,
     CONF_SOC_ENTITY,
     CONF_SOC_WINDOW,
     CONF_UNPLUGGED_STATES,
+    DEFAULT_AVG_KWH_100KM,
     DEFAULT_FORECAST_HOURS,
     DOMAIN,
+    MIN_EFFICIENCY_SAMPLE_KM,
     RETENTION_MULTIPLIER,
     SCAN_INTERVAL,
 )
@@ -37,10 +41,14 @@ from .model import (
     FIELD_DRIVE_KWH,
     FIELD_PLUGED_HOURS,
     FIELD_RATE_MAX,
+    EfficiencyState,
     accumulate_interval,
+    add_efficiency_sample,
     classify_connection,
     daily_total,
     drive_power_kw,
+    efficiency_from_store,
+    efficiency_sample_kwh_100km,
     historical_forecast,
     merge_planned_trips,
     normalise_state_list,
@@ -67,10 +75,12 @@ class EVModelConfig:
     name: str
     soc_entity_id: str
     plugged_entity_id: str
+    odometer_entity_id: str
     plugged_states: tuple[str, ...]
     unplugged_states: tuple[str, ...]
     charging_states: tuple[str, ...]
     capacity_kwh: float
+    avg_kwh_100km_seed: float
     efficiency_pct: float
     charge_rate_kw: float
     buffer_kwh: float
@@ -87,10 +97,14 @@ class EVModelConfig:
             name=str(merged[CONF_NAME]),
             soc_entity_id=str(merged[CONF_SOC_ENTITY]),
             plugged_entity_id=str(merged[CONF_PLUGGED_ENTITY]),
+            odometer_entity_id=str(merged.get(CONF_ODOMETER_ENTITY) or ""),
             plugged_states=normalise_state_list(merged.get(CONF_PLUGGED_STATES, ())),
             unplugged_states=normalise_state_list(merged.get(CONF_UNPLUGGED_STATES, ())),
             charging_states=normalise_state_list(merged.get(CONF_CHARGING_STATES, ())),
             capacity_kwh=float(merged[CONF_CAPACITY]),
+            avg_kwh_100km_seed=float(
+                merged.get(CONF_AVG_KWH_100KM, DEFAULT_AVG_KWH_100KM)
+            ),
             efficiency_pct=float(merged[CONF_EFFICIENCY]),
             charge_rate_kw=float(merged[CONF_CHARGE_RATE]),
             buffer_kwh=float(merged[CONF_BUFFER]),
@@ -125,11 +139,26 @@ class EVUsageCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._soc_samples: deque[tuple[datetime, float]] = deque(maxlen=400)
         self._previous: tuple[datetime, float, bool] | None = None
         self._last_saved: datetime | None = None
+        # Lifetime consumption: the previous SoC/odometer pair, the running
+        # figure, and whether it still has to reach the store.
+        self._previous_odo: tuple[datetime, float, float] | None = None
+        self._efficiency: EfficiencyState | None = None
+        self._efficiency_dirty = False
 
     # --- lifecycle ---------------------------------------------------------
 
     async def _async_setup(self) -> None:
         await self.store.async_load()
+        self._efficiency = efficiency_from_store(
+            self.store.efficiency,
+            self.config.avg_kwh_100km_seed,
+            self.config.capacity_kwh,
+        )
+        if not self.store.efficiency:
+            # First run: write the seeded prior straight away so a restart
+            # before the first drive still continues from it.
+            self.store.efficiency = self._efficiency.as_dict()
+            self._efficiency_dirty = True
 
     async def _async_update_data(self) -> dict[str, Any]:
         config = self.config
@@ -142,6 +171,12 @@ class EVUsageCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         plugged, charging = self._connection(config.plugged_entity_id)
         self._accumulate(now, soc, plugged)
+        odometer = (
+            self._numeric_state(config.odometer_entity_id)
+            if config.odometer_entity_id
+            else None
+        )
+        self._accumulate_efficiency(now, soc, odometer)
         self._soc_samples.append((now, soc))
         window = timedelta(minutes=config.soc_window_minutes)
         while self._soc_samples and now - self._soc_samples[0][0] > window:
@@ -168,6 +203,9 @@ class EVUsageCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.store.hours = prune_samples(self.store.hours, now - timedelta(days=config.history_days * RETENTION_MULTIPLIER))
         await self._maybe_save(now)
 
+        # Without an odometer there is no distance to attribute energy to, so
+        # the lifetime figure is not published at all.
+        tracked = self._efficiency if config.odometer_entity_id else None
         return {
             "soc": soc,
             "plugged": plugged,
@@ -185,6 +223,9 @@ class EVUsageCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "rate_forecast": rate_forecast,
             "history_hours": len(self.store.hours),
             "planned_trips": list(self.store.trips),
+            "avg_kwh_100km": round(tracked.avg_kwh_100km, 2) if tracked else None,
+            "efficiency_tracked_km": tracked.tracked_km if tracked else 0.0,
+            "efficiency_tracked_kwh": tracked.tracked_kwh if tracked else 0.0,
         }
 
     # --- accumulation ------------------------------------------------------
@@ -201,6 +242,48 @@ class EVUsageCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.config.charge_rate_kw,
             MAX_ACCUMULATE_GAP.total_seconds() / 60.0,
         )
+
+    def _accumulate_efficiency(
+        self, now: datetime, soc: float, odometer_km: float | None
+    ) -> None:
+        """Fold the interval since the previous poll into the lifetime average."""
+        config = self.config
+        previous = self._previous_odo
+        # An odometer that stops reporting must not bridge the outage: the next
+        # reading starts a fresh pair, exactly like the hour accumulation does.
+        self._previous_odo = (now, soc, odometer_km) if odometer_km is not None else None
+        state = self._efficiency
+        if state is None or round(state.seed_kwh_100km, 3) != round(
+            config.avg_kwh_100km_seed, 3
+        ):
+            # First run, or the user corrected the seeded average: rebuild the
+            # prior instead of mixing a new one into the old, and write it
+            # straight through so the correction survives a restart even if no
+            # qualifying drive sample ever arrives.
+            state = efficiency_from_store(
+                self.store.efficiency, config.avg_kwh_100km_seed, config.capacity_kwh
+            )
+            self._efficiency = state
+            self.store.efficiency = state.as_dict()
+            self._efficiency_dirty = True
+        if odometer_km is None or previous is None:
+            # Nothing to compare against yet; the figure above is still current.
+            return
+        sample = efficiency_sample_kwh_100km(
+            previous,
+            (now, soc, odometer_km),
+            config.capacity_kwh,
+            max_gap_minutes=MAX_ACCUMULATE_GAP.total_seconds() / 60.0,
+            min_distance_km=MIN_EFFICIENCY_SAMPLE_KM,
+        )
+        if sample is None:
+            return
+        updated = add_efficiency_sample(state, sample, odometer_km - previous[2])
+        if updated == state:
+            return
+        self._efficiency = updated
+        self.store.efficiency = updated.as_dict()
+        self._efficiency_dirty = True
 
     def _soc_slope_pct_per_hour(self, now: datetime) -> float:
         return soc_slope_pct_per_hour(list(self._soc_samples), self.config.soc_window_minutes, now)
@@ -233,6 +316,13 @@ class EVUsageCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return drive, plugged_fc, rate_fc
 
     async def _maybe_save(self, now: datetime) -> None:
+        if self._efficiency_dirty:
+            # A measured sample is rare and expensive to lose, so it never
+            # waits behind the throttle that keeps hour buckets cheap.
+            self._efficiency_dirty = False
+            await self.store.async_save()
+            self._last_saved = now
+            return
         if self._last_saved is not None and now - self._last_saved < timedelta(minutes=15):
             return
         await self.store.async_save()
